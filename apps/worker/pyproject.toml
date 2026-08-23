@@ -1,0 +1,18 @@
+[project]
+name = "atlas-worker"
+version = "0.1.0"
+description = "Atlas Knowledge OS background worker (ingestion pipeline)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "atlas-core",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.9"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "atlas_worker"
+
+[tool.uv.sources]
+atlas-core = { workspace = true }

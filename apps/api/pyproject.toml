@@ -1,0 +1,20 @@
+[project]
+name = "atlas-api"
+version = "0.1.0"
+description = "Atlas Knowledge OS API"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "atlas-core",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.9"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "atlas_api"
+
+[tool.uv.sources]
+atlas-core = { workspace = true }
