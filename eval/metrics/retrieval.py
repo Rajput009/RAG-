@@ -13,8 +13,11 @@ Conventions (documented choices, not accidents):
   truncated to k, so un-retrieved relevant docs lower the score.
 - MRR is capped at k: a first relevant hit beyond rank k contributes 0.
 
-All functions raise ValueError on k <= 0. No I/O, no global state, no clock:
-same inputs always produce the same outputs (hand-worked examples in tests).
+All functions raise ValueError on k <= 0, on duplicate ids within a ranking
+(a duplicated id would silently deflate precision/recall — malformed rankings
+are rejected, not mis-measured), and ndcg_at_k rejects negative grades. No
+I/O, no global state, no clock: same inputs always produce the same outputs
+(hand-worked examples in tests).
 """
 
 import math
@@ -26,29 +29,54 @@ def _validate_k(k: int) -> None:
         raise ValueError(f"k must be >= 1, got {k}")
 
 
+def _validate_ranking(ranked_ids: Sequence[str]) -> None:
+    """Reject rankings with duplicate ids: they are malformed input, not data."""
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for doc_id in ranked_ids:
+        if doc_id in seen:
+            duplicates.append(doc_id)
+        seen.add(doc_id)
+    if duplicates:
+        raise ValueError(f"ranking contains duplicate ids: {sorted(set(duplicates))}")
+
+
+def _validate_grades(graded_relevance: Mapping[str, float]) -> None:
+    """nDCG assumes non-negative graded relevance; negative grades are input errors."""
+    negatives = sorted(doc for doc, grade in graded_relevance.items() if grade < 0)
+    if negatives:
+        raise ValueError(f"graded_relevance contains negative grades for: {negatives}")
+
+
+def _top_k_hits(ranked_ids: Sequence[str], relevant_ids: Collection[str], k: int) -> int:
+    """Count relevant ids present within the top-k of the ranking."""
+    top_k = set(ranked_ids[:k])
+    return sum(1 for doc_id in relevant_ids if doc_id in top_k)
+
+
 def recall_at_k(ranked_ids: Sequence[str], relevant_ids: Collection[str], k: int) -> float:
     """|relevant ∩ top-k| / |relevant|. Did the relevant evidence appear at all?"""
     _validate_k(k)
+    _validate_ranking(ranked_ids)
     if not relevant_ids:
         return 0.0
-    top_k = set(ranked_ids[:k])
-    hits = sum(1 for doc_id in relevant_ids if doc_id in top_k)
-    return hits / len(relevant_ids)
+    return _top_k_hits(ranked_ids, relevant_ids, k) / len(relevant_ids)
 
 
 def precision_at_k(ranked_ids: Sequence[str], relevant_ids: Collection[str], k: int) -> float:
     """|relevant ∩ top-k| / k. How much of the top-k is worth reading?"""
     _validate_k(k)
-    top_k = set(ranked_ids[:k])
-    hits = sum(1 for doc_id in relevant_ids if doc_id in top_k)
-    return hits / k
+    _validate_ranking(ranked_ids)
+    return _top_k_hits(ranked_ids, relevant_ids, k) / k
 
 
 def reciprocal_rank_at_k(ranked_ids: Sequence[str], relevant_ids: Collection[str], k: int) -> float:
     """1 / rank of the first relevant hit within top-k; 0.0 if none."""
     _validate_k(k)
+    _validate_ranking(ranked_ids)
+    relevant = set(relevant_ids)  # hoisted: built once, not per rank position
     for rank, doc_id in enumerate(ranked_ids[:k], start=1):
-        if doc_id in set(relevant_ids):
+        if doc_id in relevant:
             return 1.0 / rank
     return 0.0
 
@@ -82,6 +110,8 @@ def dcg_from_grades(grades: Sequence[float]) -> float:
 def ndcg_at_k(ranked_ids: Sequence[str], graded_relevance: Mapping[str, float], k: int) -> float:
     """DCG@k / IDCG@k with graded relevance from gold labels."""
     _validate_k(k)
+    _validate_ranking(ranked_ids)
+    _validate_grades(graded_relevance)
     retrieved_grades = [graded_relevance.get(doc_id, 0.0) for doc_id in ranked_ids[:k]]
     ideal_grades = sorted(graded_relevance.values(), reverse=True)[:k]
     idcg = dcg_from_grades(ideal_grades)

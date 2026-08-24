@@ -53,3 +53,4 @@ Append-only. Newest entries at the bottom. One line per decision, dated.
 - 2026-08-24 — agent-a: corpus gold labels are spec literals bound to real passages (`GoldFact.answer_literal`); consumers must treat them as the only source of truth.
 - 2026-08-24 — agent-b: eval package importable as `eval.*` from repo root (root on `sys.path` via `__init__.py` chain); metric functions live in `eval.metrics.retrieval`, signatures take `Sequence[str]` rankings + label collections, return floats in `[0,1]`.
 - 2026-08-24 — agent-b: retrieval runners should aggregate MRR/nDCG via the mean helpers and exclude empty-relevance queries rather than averaging them in (empty sets score 0.0 by convention).
+- 2026-08-24 — agent-b: metric functions REJECT malformed input — rankings containing duplicate ids and nDCG graded relevance with negative grades raise ValueError instead of silently mis-scoring. Retrieval/fusion code feeding S10 runners must dedupe fused rankings before scoring.

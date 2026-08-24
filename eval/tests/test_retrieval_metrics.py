@@ -35,6 +35,10 @@ class TestRecallAtK:
     def test_results_beyond_k_are_ignored(self) -> None:
         assert recall_at_k(["a", "b", "c"], {"c"}, 2) == 0.0
 
+    def test_relevant_doc_absent_from_entire_ranking_counts_against_recall(self) -> None:
+        # d99 never retrieved at any rank: denominator is still |relevant| = 2
+        assert recall_at_k(RANKED_5, {"d2", "d99"}, 5) == 0.5
+
 
 class TestPrecisionAtK:
     def test_two_hits_in_top_5(self) -> None:
@@ -126,3 +130,34 @@ class TestValidation:
             mean_reciprocal_rank_at_k([["a"]], [{"a"}], k)
         with pytest.raises(ValueError, match="k must be >= 1"):
             ndcg_at_k(["a"], {"a": 1.0}, k)
+
+
+class TestMalformedInput:
+    """Duplicated ranking ids and negative grades are input errors, not data:
+
+    a duplicated id would silently deflate precision/recall instead of failing.
+    """
+
+    def test_duplicate_ids_rejected_in_recall(self) -> None:
+        with pytest.raises(ValueError, match=r"duplicate ids: \['b'\]"):
+            recall_at_k(["a", "b", "b", "c"], {"c"}, 4)
+
+    def test_duplicate_ids_rejected_in_precision(self) -> None:
+        with pytest.raises(ValueError, match="duplicate ids"):
+            precision_at_k(["a", "a"], {"a"}, 2)
+
+    def test_duplicate_ids_rejected_in_reciprocal_rank(self) -> None:
+        with pytest.raises(ValueError, match="duplicate ids"):
+            reciprocal_rank_at_k(["x", "x"], {"x"}, 2)
+
+    def test_duplicate_ids_rejected_in_ndcg(self) -> None:
+        with pytest.raises(ValueError, match="duplicate ids"):
+            ndcg_at_k(["d1", "d1"], {"d1": 3.0}, 2)
+
+    def test_duplicate_ids_rejected_via_mrr_wrapper(self) -> None:
+        with pytest.raises(ValueError, match="duplicate ids"):
+            mean_reciprocal_rank_at_k([["a", "a"]], [{"a"}], 2)
+
+    def test_negative_grades_rejected_in_ndcg(self) -> None:
+        with pytest.raises(ValueError, match="negative grades"):
+            ndcg_at_k(["a", "b"], {"a": 2.0, "b": -1.0}, 2)
