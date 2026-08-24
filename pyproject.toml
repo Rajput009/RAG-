@@ -20,7 +20,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "packages", "apps"]
+testpaths = ["tests", "packages", "apps", "eval"]
 asyncio_mode = "auto"
 
 [tool.ruff]
@@ -33,4 +33,4 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["packages", "apps"]
+files = ["packages", "apps", "eval"]
