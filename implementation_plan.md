@@ -41,5 +41,11 @@ Gates at completion: pytest 133 passed (incl. containerized S2) · ruff check/fo
 mypy strict (41 files) — all green.
 
 ## Next (per handoff order)
-Seam S3 chunker strategies -> benchmarks/chunking.md; then S4 embeddings + Retriever;
-then V0 baseline measured over golden_v1 (or frozen v0 subset for continuity).
+~~Seam S3 chunker strategies~~ DONE (84035a2): `atlas_core.chunking` seam, config-selected
+ingestion (`ATLAS_CHUNKING_STRATEGY`, default 'paragraph'), structural sweep in
+benchmarks/chunking.md (0 boundary violations, 7 strategies, 166-doc corpus).
+
+Next: Seam S4 — Embedding table inside the publish transaction; OpenAI + local bge/gte
+adapters head-to-head; pgvector HNSW; `Retriever.retrieve(query, filters) -> RankedResults`;
+then V0 baseline measured -> benchmarks/baseline-v0.md (closes Phase 1 gate).
+
