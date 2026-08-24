@@ -6,6 +6,8 @@ from atlas_core.db.models import Document, DocumentVersion, Organization, Upload
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from atlas_api.services.ingestion import content_hash, process_document
@@ -25,17 +27,34 @@ def _session(request: Request) -> AsyncSession:
 
 async def _get_or_create_org_id(request: Request, tenant_name: str) -> uuid.UUID:
     async with _session(request) as session:
-        result = await session.execute(
-            select(Organization).where(Organization.name == tenant_name)
+        await session.execute(
+            pg_insert(Organization)
+            .values(name=tenant_name)
+            .on_conflict_do_nothing(index_elements=[Organization.name])
         )
-        org = result.scalar_one_or_none()
-        if org is None:
-            org = Organization(name=tenant_name)
-            session.add(org)
-            await session.commit()
-            await session.refresh(org)
-        assert isinstance(org, Organization)
-        return org.id
+        org_id = (
+            await session.execute(
+                select(Organization.id).where(Organization.name == tenant_name)
+            )
+        ).scalar_one()
+        await session.commit()
+        return org_id
+
+
+async def _replay_response(session: AsyncSession, key: str) -> dict[str, object] | None:
+    existing = (
+        await session.execute(select(Upload).where(Upload.idempotency_key == key))
+    ).scalar_one_or_none()
+    if existing is None or existing.document_id is None or existing.version_id is None:
+        return None
+    version = await session.get(DocumentVersion, existing.version_id)
+    return {
+        "replayed": True,
+        "deduplicated": False,
+        "document_id": str(existing.document_id),
+        "version_id": str(existing.version_id),
+        "status": version.status if version else "unknown",
+    }
 
 
 @router.post("", status_code=202)
@@ -53,48 +72,67 @@ async def upload_document(
     hash_value = content_hash(body.content)
 
     async with _session(request) as session:
-        existing = (
+        replay = await _replay_response(session, idempotency_key)
+        if replay is not None:
+            return replay
+
+        published_match = (
             await session.execute(
-                select(Upload).where(Upload.idempotency_key == idempotency_key)
+                select(DocumentVersion.id, DocumentVersion.document_id)
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .where(
+                    Document.organization_id == org_id,
+                    DocumentVersion.content_hash == hash_value,
+                    DocumentVersion.status == "published",
+                )
+                .limit(1)
             )
-        ).scalar_one_or_none()
-        if existing is not None:
-            assert existing.document_id is not None and existing.version_id is not None
-            version = await session.get(DocumentVersion, existing.version_id)
+        ).first()
+
+        document = Document(id=uuid.uuid4(), organization_id=org_id)
+        version = DocumentVersion(id=uuid.uuid4())
+        upload = Upload(id=uuid.uuid4(), idempotency_key=idempotency_key)
+
+        if published_match is not None:
+            upload.status = "completed"
+            upload.organization_id = org_id
+            upload.document_id = published_match.document_id
+            upload.version_id = published_match.id
+            upload.content_hash = hash_value
+            session.add(upload)
+            await session.commit()
             return {
-                "replayed": True,
-                "document_id": str(existing.document_id),
-                "version_id": str(existing.version_id),
-                "status": version.status if version else "unknown",
+                "replayed": False,
+                "deduplicated": True,
+                "document_id": str(published_match.document_id),
+                "version_id": str(published_match.id),
+                "status": "published",
             }
 
-        document = Document(
-            id=uuid.uuid4(),
-            organization_id=org_id,
-            title=body.title,
-            doc_type=body.doc_type,
-            status="processing",
-        )
-        version = DocumentVersion(
-            id=uuid.uuid4(),
-            document_id=document.id,
-            version_number=1,
-            content_hash=hash_value,
-            effective_date="2026-01-01",
-            status="indexing",
-            source_text=body.content,
-        )
-        upload = Upload(
-            id=uuid.uuid4(),
-            idempotency_key=idempotency_key,
-            content_hash=hash_value,
-            status="pending",
-            organization_id=org_id,
-            document_id=document.id,
-            version_id=version.id,
-        )
+        document.title = body.title
+        document.doc_type = body.doc_type
+        document.status = "processing"
+        version.document_id = document.id
+        version.version_number = 1
+        version.content_hash = hash_value
+        version.effective_date = "2026-01-01"
+        version.status = "indexing"
+        version.source_text = body.content
+        upload.content_hash = hash_value
+        upload.status = "pending"
+        upload.organization_id = org_id
+        upload.document_id = document.id
+        upload.version_id = version.id
+
         session.add_all([document, version, upload])
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raced = await _replay_response(session, idempotency_key)
+            if raced is not None:
+                return raced
+            raise HTTPException(status_code=409, detail="idempotency conflict") from None
 
     background_tasks.add_task(
         process_document,
@@ -108,6 +146,7 @@ async def upload_document(
 
     return {
         "replayed": False,
+        "deduplicated": False,
         "document_id": str(document.id),
         "version_id": str(version.id),
         "status": "indexing",

@@ -12,13 +12,38 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 logger = logging.getLogger(__name__)
 
 
-def split_sections(content: str) -> list[tuple[list[str], int]]:
-    """v0 structural parse: blank-line separated paragraphs on one page.
+def split_sections(content: str) -> list[tuple[str, list[str], int]]:
+    """Minimal structure-aware parse: markdown ATX headings delimit sections.
 
-    Replaced by the real structure-aware parser/chunker in seam S3.
+    Returns (heading, paragraphs, page) tuples with pages assigned per section
+    ordinal. Content without headings lands in a single 'Content' section.
+    Replaced/deepened by the full S3 chunker.
     """
-    paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
-    return [(paragraphs, 1)] if paragraphs else []
+    sections: list[tuple[str, list[str], int]] = []
+    current_heading = "Content"
+    current_paragraphs: list[str] = []
+
+    def flush() -> None:
+        if current_paragraphs:
+            sections.append(
+                (current_heading, list(current_paragraphs), max(1, len(sections) + 1))
+            )
+
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("#"):
+            flush()
+            current_heading = stripped.lstrip("#").strip() or "Content"
+            current_paragraphs = []
+        elif stripped:
+            current_paragraphs.append(stripped)
+    flush()
+
+    return sections
+
+
+def approximate_token_count(text: str) -> int:
+    return max(1, len(text) // 4)
 
 
 def content_hash(content: str) -> str:
@@ -62,19 +87,18 @@ async def process_document(
             raise ValueError("document content is empty after parsing")
 
         chunk_rows: list[dict[str, object]] = []
-        for paragraphs, page in sections:
+        global_index = 0
+        for heading, paragraphs, page in sections:
             embeddings = await embedding_provider.embed(paragraphs)
-            for index, (paragraph, embedding) in enumerate(
-                zip(paragraphs, embeddings, strict=True)
-            ):
+            for paragraph, embedding in zip(paragraphs, embeddings, strict=True):
                 chunk_rows.append(
                     {
                         "document_version_id": version_id,
-                        "chunk_index": index,
+                        "chunk_index": global_index,
                         "text": paragraph,
-                        "token_count": embedding.input_tokens * 4,
+                        "token_count": approximate_token_count(paragraph),
                         "page_number": page,
-                        "section_path": ["Content"],
+                        "section_path": [heading],
                         "metadata_json": {
                             "document_id": str(document_id),
                             "version_id": str(version_id),
@@ -83,6 +107,7 @@ async def process_document(
                         },
                     }
                 )
+                global_index += 1
 
         async with engine.begin() as conn:
             if chunk_rows:
