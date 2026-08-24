@@ -1,0 +1,33 @@
+{
+  "seed": 42,
+  "tenants": [
+    {
+      "tenant_id": "acme",
+      "display_name": "Acme Corp",
+      "docs_per_type": {"policy": 6, "hr_manual": 4}
+    },
+    {
+      "tenant_id": "globex",
+      "display_name": "Globex Inc",
+      "docs_per_type": {"policy": 5, "onboarding": 3}
+    },
+    {
+      "tenant_id": "initech",
+      "display_name": "Initech LLC",
+      "docs_per_type": {"policy": 4, "benefits_guide": 4}
+    }
+  ],
+  "versioned_types": ["policy", "hr_manual"],
+  "injection_docs": 6,
+  "distractor_sets": 4,
+  "unanswerable_topics": [
+    "2030 revenue forecast",
+    "employee stock purchase plan discount",
+    "office pet policy",
+    "company jet usage rules",
+    "sabbatical program eligibility",
+    "cryptocurrency payment options",
+    "mars relocation benefits",
+    "quantum computing roadmap"
+  ]
+}
