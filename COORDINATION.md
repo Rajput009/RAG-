@@ -46,6 +46,7 @@ Unowned areas (claim before touching): root `README.md`, `docs/*`, `.env.example
 |---|---|---|---|
 | Phase 0 scaffold + S1 corpus generator | agent-a | 79dfa33 | `atlas_core.corpus`, guardrails config, provider protocols |
 | Seam S2: ingestion API (idempotency, atomic publication, redrive) | agent-a | 4ef50ac | `atlas_api` documents router + `atlas_core.db`; testcontainers-based tests; HashEmbeddingProvider v0 adapter |
+| S2 hardening (races, dedup, global chunk_index) | agent-a | 1b1e343 | Concurrent idempotency + org creation race-safe; content-hash dedup with `deduplicated` flag; heading-aware v0 parser; 116 tests green on merged tree |
 
 ## 4. Decision & handoff log
 
