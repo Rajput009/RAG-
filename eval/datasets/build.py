@@ -103,12 +103,20 @@ def write_jsonl(cases: list[GoldenCase], path: str | Path) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI: `python -m eval.datasets.build --spec spec.json --out golden.jsonl`.
 
+    With `--compose`, emits the full docs/02 §3 composition instead of the
+    factual+unanswerable base (eval.datasets.compose::full_dataset).
+
     Self-validates its own output: blocking errors exit 1 (the file is still
     written for inspection, but is declared unusable).
     """
     parser = argparse.ArgumentParser(description="Build golden dataset JSONL from a corpus spec")
     parser.add_argument("--spec", required=True, help="CorpusSpec JSON file")
     parser.add_argument("--out", required=True, help="output JSONL path")
+    parser.add_argument(
+        "--compose",
+        action="store_true",
+        help="build the full docs/02 §3 composition (all categories except security)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -120,7 +128,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"FAIL: invalid corpus spec: {exc}")
         return 1
 
-    cases = build_cases(generate_corpus(spec))
+    if args.compose:
+        # deferred import: eval.datasets.compose imports helpers from this module
+        from eval.datasets.compose import full_dataset
+
+        cases = full_dataset(generate_corpus(spec))
+    else:
+        cases = build_cases(generate_corpus(spec))
     write_jsonl(cases, args.out)
     report = validate_dataset(cases)
     print(f"wrote {len(cases)} cases to {args.out}")

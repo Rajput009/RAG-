@@ -1,0 +1,55 @@
+{
+  "seed": 42,
+  "tenants": [
+    {
+      "tenant_id": "acme",
+      "display_name": "Acme Corp",
+      "docs_per_type": {"policy": 6, "hr_manual": 4, "it_catalog": 3, "incident_runbook": 3}
+    },
+    {
+      "tenant_id": "globex",
+      "display_name": "Globex Inc",
+      "docs_per_type": {"policy": 6, "hr_manual": 4, "it_catalog": 3, "incident_runbook": 3, "onboarding": 2}
+    },
+    {
+      "tenant_id": "initech",
+      "display_name": "Initech LLC",
+      "docs_per_type": {"policy": 6, "hr_manual": 4, "it_catalog": 3, "incident_runbook": 3, "benefits_guide": 2}
+    }
+  ],
+  "versioned_types": ["policy", "hr_manual", "it_catalog", "incident_runbook"],
+  "injection_docs": 6,
+  "distractor_sets": 4,
+  "unanswerable_topics": [
+    "2030 revenue forecast",
+    "employee stock purchase plan discount",
+    "office pet policy",
+    "company jet usage rules",
+    "sabbatical program eligibility",
+    "cryptocurrency payment options",
+    "mars relocation benefits",
+    "quantum computing roadmap",
+    "four-day work week pilot",
+    "tuition reimbursement cap",
+    "legal defense coverage for employees",
+    "company-owned vacation homes",
+    "equity refresh grants",
+    "wellness stipend amounts",
+    "electric vehicle charging subsidy",
+    "childcare facility locations",
+    "immigration sponsorship process fees",
+    "passport loss travel assistance",
+    "annual bonus formula for interns",
+    "retirement plan match for contractors",
+    "drone insurance coverage",
+    "space telescope naming rights",
+    "per diem rates for Antarctica travel",
+    "internal social media moderation rules",
+    "lunar office relocation package",
+    "hazard pay for volcano research",
+    "company yacht usage policy",
+    "lottery winnings sharing program",
+    "time travel expense policy",
+    "perpetual motion machine research budget"
+  ]
+}

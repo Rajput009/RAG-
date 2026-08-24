@@ -1,45 +1,45 @@
-# Implementation Plan — Golden Dataset Schema + Validator
+# Implementation Plan — Task 1 of handoff: full §3 golden composition (+ corpus identifier extension)
 
 ## Overview
 
-Typed contract for the 300-case JSONL golden dataset (docs/02-eval-framework.md §2-§3)
-plus a fail-fast loader and cross-case validator. Agent-b workstream, owned paths
-`eval/**` per COORDINATION.md. Manifest→JSONL converter and S11 gate comparator deferred.
+Handoff Task 1 (agent-a → agent-b, COORDINATION.md §4): corpus expansion + full
+docs/02 §3 golden dataset. Executed directly on `main` (sole-agent ownership of both rails).
 
-Executed in the linked worktree `d:\work\rag-eval-datasets` on branch `eval/golden-dataset`
-(per agent-a's hazard note in COORDINATION.md §4 — shared-checkout discipline).
+## Changes
 
-## Types
+### Corpus generator (`atlas_core.corpus.generate`) — additive only
+- New versioned doc types `it_catalog`, `incident_runbook` with SKU/error-code templates.
+- `IDENTIFIER_PREFIXES`: listed fact keys render `'{prefix}{value}'` (e.g. `LT-4071`)
+  instead of `'{value} {unit}'`; `_render_value()` helper used in paragraphs + literals.
+- Legacy doc types byte-stable: golden_v0 regeneration verified SHA256-identical post-change.
 
-- `GoldSource(BaseModel)`: doc_id / section / page(ge=1); `from_string()` parses
-  `{doc_id}:{section}:page:{page}`, `__str__` round-trips.
-- `GoldenCase(BaseModel)`: id, tenant, user_role(Role), question, gold_sources,
-  gold_answer|None, answerable, expected_behavior("answer"/"abstain"), difficulty,
-  category(9 values from docs §3), author(generator/handwritten), spec_literal|None,
-  required_claims[]. Four model validators enforce: answerable⇔expected_behavior,
-  answerable⇔category=="unanswerable", gold fields match answerability,
-  generator cases carry spec_literal.
-- `ValidationIssue`: line/case_id/message. `ValidationReport`: cases/errors/warnings + `.valid`.
+### Composer (`eval/datasets/compose.py`, new)
+Deterministic derivations from the manifest: factual(60) / paraphrase(45) /
+identifier(30) / multi_doc(45) / comparison(30) / temporal(30) / ambiguous(15,
+handwritten via model_copy) / unanswerable(30). Selection = first N of sorted pool.
+Combined cases join literals (`"; "`), carry `required_claims`, cite both sources.
+Distractor SLA facts excluded from combined categories (unlabeled keys).
 
-## Files
+### Builder CLI (`eval/datasets/build.py`)
+`--compose` flag -> `full_dataset(manifest)`; lazy import avoids build<->compose cycle.
 
-- `eval/datasets/__init__.py`, `eval/datasets/schema.py`, `eval/datasets/validate.py` (new)
-- `eval/tests/test_dataset_schema.py`, `eval/tests/test_dataset_validate.py` (new)
-- `COORDINATION.md` (decision log entry; committed on main as 3f97637)
+### Artifacts
+- `eval/datasets/golden/spec_full.json` (seed 42, hash `7c4ce93003d67efa`, 30 topics)
+- `eval/datasets/golden/golden_v1.jsonl` (285 cases; validator green, only expected
+  security-drift warning)
+- `eval/datasets/security/{README.md,cases_v0.jsonl}` (15 handwritten injection-grounding
+  cases, schema-valid `category="security"`; zero errors)
 
-## Functions
+### Tests
+- `packages/rag-core/tests/test_corpus_identifiers.py` (4): prefixed literals bound to
+  passages, per-family distinctness, legacy rendering unchanged.
+- `eval/tests/test_compose.py` (13): exact target counts, id uniqueness, spec-literal
+  rules, joined gold answers, temporal=current-v3, determinism, fail-loud undersized
+  manifests, validation-with-known-drift.
 
-- `load_jsonl(path) -> list[GoldenCase]` — fail-fast, ValueError names 1-based line
-- `validate_dataset(cases) -> ValidationReport` — duplicate ids (error), multi_doc/comparison
-  without required_claims (warning), composition drift vs §3 targets (warning)
-- `main(argv) -> int` — CLI `python -m eval.datasets.validate <path> [--strict]`; 0 valid, 1 invalid
+Gates at completion: pytest 133 passed (incl. containerized S2) · ruff check/format ·
+mypy strict (41 files) — all green.
 
-## Dependencies
-
-None added (pydantic already present).
-
-## Testing
-
-29 tests across two files: schema rules from docs examples, round-trips, line-numbered
-loader failures, cross-case checks, CLI exit codes incl. --strict. Gates:
-pytest / ruff check / ruff format --check / mypy strict all green before commit.
+## Next (per handoff order)
+Seam S3 chunker strategies -> benchmarks/chunking.md; then S4 embeddings + Retriever;
+then V0 baseline measured over golden_v1 (or frozen v0 subset for continuity).
