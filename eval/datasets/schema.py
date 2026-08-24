@@ -115,10 +115,17 @@ class GoldenCase(BaseModel):
 
     @model_validator(mode="after")
     def _generator_cases_carry_spec_literal(self) -> "GoldenCase":
-        if self.author == "generator" and not (self.spec_literal and self.spec_literal.strip()):
+        # The spec-literal rule (docs/02 §2) exists so gold VALUES have an independent
+        # source of truth. Unanswerable cases assert absence of an answer, so they
+        # carry no value and need no literal.
+        if (
+            self.author == "generator"
+            and self.answerable
+            and not (self.spec_literal and self.spec_literal.strip())
+        ):
             raise ValueError(
-                f"case {self.id!r}: generator-authored cases must carry spec_literal "
-                "(independent source of truth, docs/02 §2)"
+                f"case {self.id!r}: generator-authored answerable cases must carry "
+                "spec_literal (independent source of truth, docs/02 §2)"
             )
         return self
 
