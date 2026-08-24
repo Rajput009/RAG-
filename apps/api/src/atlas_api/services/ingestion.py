@@ -1,49 +1,16 @@
-"""Ingestion processing: parse -> chunk (v0 stub) -> embed -> atomic publish."""
+"""Ingestion processing: parse -> chunk (seam S3) -> embed -> atomic publish."""
 
 import hashlib
 import logging
 import uuid
 
+from atlas_core.chunking import chunk_document, get_strategy, parse_markdown
 from atlas_core.db.models import Chunk, Document, DocumentVersion, Upload
 from atlas_core.providers import EmbeddingProvider
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 logger = logging.getLogger(__name__)
-
-
-def split_sections(content: str) -> list[tuple[str, list[str], int]]:
-    """Minimal structure-aware parse: markdown ATX headings delimit sections.
-
-    Returns (heading, paragraphs, page) tuples with pages assigned per section
-    ordinal. Content without headings lands in a single 'Content' section.
-    Replaced/deepened by the full S3 chunker.
-    """
-    sections: list[tuple[str, list[str], int]] = []
-    current_heading = "Content"
-    current_paragraphs: list[str] = []
-
-    def flush() -> None:
-        if current_paragraphs:
-            sections.append(
-                (current_heading, list(current_paragraphs), max(1, len(sections) + 1))
-            )
-
-    for raw_line in content.splitlines():
-        stripped = raw_line.strip()
-        if stripped.startswith("#"):
-            flush()
-            current_heading = stripped.lstrip("#").strip() or "Content"
-            current_paragraphs = []
-        elif stripped:
-            current_paragraphs.append(stripped)
-    flush()
-
-    return sections
-
-
-def approximate_token_count(text: str) -> int:
-    return max(1, len(text) // 4)
 
 
 def content_hash(content: str) -> str:
@@ -55,9 +22,7 @@ async def _mark_failure(
 ) -> None:
     async with engine.begin() as conn:
         await conn.execute(
-            update(DocumentVersion)
-            .where(DocumentVersion.id == version_id)
-            .values(status="failed")
+            update(DocumentVersion).where(DocumentVersion.id == version_id).values(status="failed")
         )
         await conn.execute(
             update(Upload)
@@ -74,40 +39,51 @@ async def process_document(
     document_id: uuid.UUID,
     version_id: uuid.UUID,
     content: str,
+    strategy_name: str = "paragraph",
 ) -> bool:
     """Process one version. Returns True when published.
+
+    Chunking runs through seam S3 (`atlas_core.chunking`) with the strategy
+    selected by config (default 'paragraph' = v0 behavior until the sweep).
 
     Atomic publication contract: chunk rows and the status flip to 'published'
     happen inside a single transaction; any failure leaves the version
     unpublished and invisible to search.
     """
     try:
-        sections = split_sections(content)
-        if not sections:
+        document = parse_markdown(content)
+        if not document.sections:
             raise ValueError("document content is empty after parsing")
 
+        chunks = chunk_document(document, get_strategy(strategy_name))
+        if not chunks:
+            raise ValueError(f"strategy {strategy_name!r} produced no chunks")
+
+        # single batched provider round-trip for the whole version
+        embeddings = await embedding_provider.embed([chunk.text for chunk in chunks])
+
         chunk_rows: list[dict[str, object]] = []
-        global_index = 0
-        for heading, paragraphs, page in sections:
-            embeddings = await embedding_provider.embed(paragraphs)
-            for paragraph, embedding in zip(paragraphs, embeddings, strict=True):
-                chunk_rows.append(
-                    {
-                        "document_version_id": version_id,
-                        "chunk_index": global_index,
-                        "text": paragraph,
-                        "token_count": approximate_token_count(paragraph),
-                        "page_number": page,
-                        "section_path": [heading],
-                        "metadata_json": {
-                            "document_id": str(document_id),
-                            "version_id": str(version_id),
-                            "page": page,
-                            "embedding_model": embedding.model,
-                        },
-                    }
-                )
-                global_index += 1
+        for global_index, (chunk, embedding) in enumerate(
+            zip(chunks, embeddings, strict=True)
+        ):
+            chunk_rows.append(
+                {
+                    "document_version_id": version_id,
+                    "chunk_index": global_index,
+                    "text": chunk.text,
+                    "token_count": chunk.token_count,
+                    "page_number": chunk.page_number,
+                    "section_path": chunk.section_path,
+                    "metadata_json": {
+                        "document_id": str(document_id),
+                        "version_id": str(version_id),
+                        "page": chunk.page_number,
+                        "section_path": chunk.section_path,
+                        "chunking_strategy": strategy_name,
+                        "embedding_model": embedding.model,
+                    },
+                }
+            )
 
         async with engine.begin() as conn:
             if chunk_rows:
@@ -132,9 +108,7 @@ async def process_document(
         return False
 
 
-async def load_published_chunk_texts(
-    engine: AsyncEngine, version_id: uuid.UUID
-) -> list[str]:
+async def load_published_chunk_texts(engine: AsyncEngine, version_id: uuid.UUID) -> list[str]:
     async with engine.connect() as conn:
         result = await conn.execute(
             select(Chunk.text)

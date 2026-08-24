@@ -33,9 +33,7 @@ async def _get_or_create_org_id(request: Request, tenant_name: str) -> uuid.UUID
             .on_conflict_do_nothing(index_elements=[Organization.name])
         )
         org_id = (
-            await session.execute(
-                select(Organization.id).where(Organization.name == tenant_name)
-            )
+            await session.execute(select(Organization.id).where(Organization.name == tenant_name))
         ).scalar_one()
         await session.commit()
         return org_id
@@ -142,6 +140,7 @@ async def upload_document(
         document_id=document.id,
         version_id=version.id,
         content=body.content,
+        strategy_name=request.app.state.settings.chunking_strategy,
     )
 
     return {
@@ -167,9 +166,7 @@ async def redrive_document(
     """
     async with _session(request) as session:
         upload = (
-            await session.execute(
-                select(Upload).where(Upload.idempotency_key == idempotency_key)
-            )
+            await session.execute(select(Upload).where(Upload.idempotency_key == idempotency_key))
         ).scalar_one_or_none()
         if upload is None or upload.document_id != document_id:
             raise HTTPException(status_code=404, detail="upload not found for key")
@@ -186,9 +183,7 @@ async def redrive_document(
             .values(status="indexing")
         )
         await session.execute(
-            update(Upload)
-            .where(Upload.id == upload.id)
-            .values(status="pending", error_detail=None)
+            update(Upload).where(Upload.id == upload.id).values(status="pending", error_detail=None)
         )
 
     background_tasks.add_task(
@@ -199,6 +194,7 @@ async def redrive_document(
         document_id=document_id,
         version_id=version.id,
         content=content,
+        strategy_name=request.app.state.settings.chunking_strategy,
     )
     return {"document_id": str(document_id), "version_id": str(version.id), "status": "indexing"}
 

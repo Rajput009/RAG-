@@ -53,5 +53,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://atlas:atlas@localhost:5432/atlas"
     redis_url: str = "redis://localhost:6379/0"
     object_storage_url: str = "http://localhost:9000"
+    # Seam S3 strategy selection (atlas_core.chunking.get_strategy). Default stays
+    # 'paragraph' (v0 behavior) until benchmarks/chunking.md measures a winner.
+    chunking_strategy: str = "paragraph"
 
     guardrails: Guardrails = Guardrails()

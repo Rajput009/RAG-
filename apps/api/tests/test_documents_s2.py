@@ -42,9 +42,7 @@ class FailingEmbedder(HashEmbeddingProvider):
         return await super().embed(texts)
 
 
-async def _post(
-    client: AsyncClient, key: str, content: str = CONTENT
-) -> dict[str, object]:
+async def _post(client: AsyncClient, key: str, content: str = CONTENT) -> dict[str, object]:
     response = await client.post(
         "/documents",
         json={"title": "Refund Policy", "doc_type": "policy", "content": content},
@@ -71,9 +69,9 @@ async def test_upload_reaches_published_with_all_chunks_persisted(client: Client
     async with engine.connect() as conn:
         count = (
             await conn.execute(
-                select(func.count()).select_from(Chunk).where(
-                    Chunk.document_version_id == version_id
-                )
+                select(func.count())
+                .select_from(Chunk)
+                .where(Chunk.document_version_id == version_id)
             )
         ).scalar_one()
     assert count == 3
@@ -102,9 +100,7 @@ async def test_same_idempotency_key_five_times_yields_single_version(client: Cli
 
 async def test_missing_idempotency_key_is_rejected(client: ClientPair) -> None:
     http, _app = client
-    response = await http.post(
-        "/documents", json={"title": "T", "content": "C"}, headers={}
-    )
+    response = await http.post("/documents", json={"title": "T", "content": "C"}, headers={})
     assert response.status_code == 422
 
 
@@ -132,9 +128,9 @@ async def test_embedding_failure_never_publishes_or_persists_chunks(client: Clie
     async with engine.connect() as conn:
         chunk_count = (
             await conn.execute(
-                select(func.count()).select_from(Chunk).where(
-                    Chunk.document_version_id == version_id
-                )
+                select(func.count())
+                .select_from(Chunk)
+                .where(Chunk.document_version_id == version_id)
             )
         ).scalar_one()
         status_row = (
@@ -186,9 +182,9 @@ async def test_redrive_after_failure_publishes_without_duplicate_chunks(
     async with app.state.engine.connect() as conn:
         chunk_count = (
             await conn.execute(
-                select(func.count()).select_from(Chunk).where(
-                    Chunk.document_version_id == version_id
-                )
+                select(func.count())
+                .select_from(Chunk)
+                .where(Chunk.document_version_id == version_id)
             )
         ).scalar_one()
     assert chunk_count == 3
@@ -204,10 +200,10 @@ MULTI_SECTION_CONTENT = (
 
 
 async def test_chunk_indexes_are_global_across_sections(client: ClientPair) -> None:
-    from atlas_api.services.ingestion import split_sections
+    from atlas_core.chunking import parse_markdown as _parse_sections
 
-    sections = split_sections(MULTI_SECTION_CONTENT)
-    assert [heading for heading, _paragraphs, _page in sections] == ["Cancellation", "Refunds"]
+    sections = _parse_sections(MULTI_SECTION_CONTENT)
+    assert [s.heading for s in sections.sections] == ["Cancellation", "Refunds"]
 
     http, app = client
     result = await _post(http, "sections-1", content=MULTI_SECTION_CONTENT)
@@ -287,20 +283,22 @@ async def test_concurrent_new_tenants_yield_single_org_each(client: ClientPair) 
         )
         return response.status_code
 
-    codes = await asyncio.gather(
-        fire("concurrent-a"), fire("concurrent-a"), fire("concurrent-b")
-    )
+    codes = await asyncio.gather(fire("concurrent-a"), fire("concurrent-a"), fire("concurrent-b"))
     assert all(code == 202 for code in codes)
 
     engine: AsyncEngine = app.state.engine
     async with engine.connect() as conn:
         names = (
-            await conn.execute(
-                select(Organization.name).where(
-                    Organization.name.in_(["concurrent-a", "concurrent-b"])
+            (
+                await conn.execute(
+                    select(Organization.name).where(
+                        Organization.name.in_(["concurrent-a", "concurrent-b"])
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert sorted(names) == ["concurrent-a", "concurrent-b"]
 
 
@@ -323,12 +321,8 @@ async def test_same_content_different_key_is_deduplicated(client: ClientPair) ->
 
     engine: AsyncEngine = app.state.engine
     async with engine.connect() as conn:
-        doc_count = (
-            await conn.execute(select(func.count()).select_from(Document))
-        ).scalar_one()
-        upload_keys = (
-            await conn.execute(select(Upload.idempotency_key))
-        ).scalars().all()
+        doc_count = (await conn.execute(select(func.count()).select_from(Document))).scalar_one()
+        upload_keys = (await conn.execute(select(Upload.idempotency_key))).scalars().all()
     assert doc_count == 1
     assert sorted(upload_keys) == ["dedup-first", "dedup-second"]
 
@@ -348,7 +342,5 @@ async def test_dedup_is_scoped_to_tenant(client: ClientPair) -> None:
 
     engine: AsyncEngine = app.state.engine
     async with engine.connect() as conn:
-        doc_count = (
-            await conn.execute(select(func.count()).select_from(Document))
-        ).scalar_one()
+        doc_count = (await conn.execute(select(func.count()).select_from(Document))).scalar_one()
     assert doc_count == 2
