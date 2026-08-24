@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ATLAS_", env_file=".env", extra="ignore")
 
     environment: str = "development"
-    database_url: str = "postgresql://atlas:atlas@localhost:5432/atlas"
+    database_url: str = "postgresql+asyncpg://atlas:atlas@localhost:5432/atlas"
     redis_url: str = "redis://localhost:6379/0"
     object_storage_url: str = "http://localhost:9000"
 

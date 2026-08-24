@@ -5,6 +5,7 @@ approved mock boundary (roadmap seam policy): tests may substitute implementatio
 LLMProvider / EmbeddingProvider / RerankerProvider, never internal collaborators.
 """
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -71,3 +72,27 @@ def resolve_provider[T: Any](protocol_type: type[T], implementation: Any) -> T:
             f"{type(implementation).__name__} does not satisfy {protocol_type.__name__}"
         )
     return implementation
+
+
+class HashEmbeddingProvider:
+    """Deterministic, cost-free EmbeddingProvider for v0 pipelines and tests.
+
+    Same text always yields the same vector; different texts practically never
+    collide. Not semantically meaningful - replaced by real providers in S4.
+    """
+
+    DIM = 64
+
+    @property
+    def model_name(self) -> str:
+        return "hash-64d"
+
+    async def embed(self, texts: list[str]) -> list[EmbeddingResult]:
+        results: list[EmbeddingResult] = []
+        for text in texts:
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            vector = [b / 255.0 for b in digest[: self.DIM]]
+            results.append(
+                EmbeddingResult(vector=vector, model=self.model_name, input_tokens=len(text) // 4)
+            )
+        return results
