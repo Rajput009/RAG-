@@ -35,7 +35,12 @@ class GoldSource(BaseModel):
 
     @classmethod
     def from_string(cls, raw: str) -> "GoldSource":
-        """Parse '{doc_id}:{section_slug}:page:{page}' (e.g. from docs §2 examples)."""
+        """Parse '{doc_id}:{section_slug}:page:{page}' (e.g. from docs §2 examples).
+
+        Assumption (contract, see COORDINATION.md): doc_id contains no ':' —
+        everything before the first colon is the doc_id; section may contain
+        colons and still round-trips via __str__.
+        """
         parts = raw.rsplit(":page:", 1)
         if len(parts) != 2:
             raise ValueError(
@@ -63,15 +68,6 @@ class GoldenCase(BaseModel):
     user_role: Role
     question: str = Field(min_length=1)
     gold_sources: list[GoldSource] = Field(default_factory=list)
-
-    @field_validator("gold_sources", mode="before")
-    @classmethod
-    def _accept_string_gold_sources(cls, value: object) -> object:
-        """The JSONL format (docs/02 §2) stores gold sources as strings."""
-        if isinstance(value, list):
-            return [GoldSource.from_string(v) if isinstance(v, str) else v for v in value]
-        return value
-
     gold_answer: str | None = None
     answerable: bool
     expected_behavior: ExpectedBehavior = "answer"
@@ -80,6 +76,14 @@ class GoldenCase(BaseModel):
     author: Author
     spec_literal: str | None = None
     required_claims: list[str] = Field(default_factory=list)
+
+    @field_validator("gold_sources", mode="before")
+    @classmethod
+    def _accept_string_gold_sources(cls, value: object) -> object:
+        """The JSONL format (docs/02 §2) stores gold sources as strings."""
+        if isinstance(value, list):
+            return [GoldSource.from_string(v) if isinstance(v, str) else v for v in value]
+        return value
 
     @model_validator(mode="after")
     def _behavior_matches_answerable(self) -> "GoldenCase":

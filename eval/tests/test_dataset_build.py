@@ -94,3 +94,41 @@ class TestWriteJsonlRoundTrip:
         first = json.loads(first_line)
         assert isinstance(first["gold_sources"][0], str)
         assert ":" in first["gold_sources"][0]
+
+
+class TestSectionSlugContract:
+    def test_headings_are_slugified_in_gold_sources(self) -> None:
+        # Pin the slug rule: citation resolution (S9) must match it exactly.
+        manifest = generate_corpus(small_spec())
+        case = build_cases(manifest)[0]
+        source = case.gold_sources[0]
+        assert ":" not in source.doc_id
+        assert source.section == "terms_and_conditions"
+        assert str(source).endswith(":page:2")
+
+    def test_slug_rule_is_strip_lower_underscore(self) -> None:
+        from eval.datasets.build import _section_slug
+
+        assert _section_slug("  Terms and Conditions ") == "terms_and_conditions"
+
+
+class TestEdgeCases:
+    def test_category_parameter_flows_through(self) -> None:
+        from eval.datasets.build import fact_to_case
+
+        manifest = generate_corpus(small_spec())
+        fact = manifest.gold_facts[0]
+        case = fact_to_case(fact, category="identifier")
+        assert case.category == "identifier"
+        assert fact_to_case(fact).category == "factual"
+
+    def test_empty_manifest_yields_no_cases(self) -> None:
+        from atlas_core.corpus import CorpusManifest
+
+        empty = CorpusManifest(spec_hash="x", documents=[], gold_facts=[])
+        assert build_cases(empty) == []
+
+    def test_cli_missing_spec_file_fails_cleanly(self, tmp_path: Path) -> None:
+        from eval.datasets.build import main
+
+        assert main(["--spec", f"{tmp_path}/nope.json", "--out", f"{tmp_path}/o.jsonl"]) == 1

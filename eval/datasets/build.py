@@ -8,15 +8,23 @@ GoldenCase objects.
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from atlas_core.corpus import CorpusManifest, CorpusSpec, generate_corpus
 from atlas_core.corpus.generate import GoldFact
 
 from eval.datasets.schema import Category, GoldenCase, GoldSource
+from eval.datasets.validate import validate_dataset
 
 
 def _section_slug(heading: str) -> str:
+    """Slug rule: strip, lowercase, spaces -> underscores.
+
+    CONTRACT (COORDINATION.md): gold sources in golden cases use this exact
+    slug of the corpus section heading. Citation resolution (S9) must apply
+    the same rule when mapping chunk section_path headings to case labels.
+    """
     return heading.strip().lower().replace(" ", "_")
 
 
@@ -92,18 +100,38 @@ def write_jsonl(cases: list[GoldenCase], path: str | Path) -> None:
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI: `python -m eval.datasets.build --spec spec.json --out golden.jsonl`."""
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI: `python -m eval.datasets.build --spec spec.json --out golden.jsonl`.
+
+    Self-validates its own output: blocking errors exit 1 (the file is still
+    written for inspection, but is declared unusable).
+    """
     parser = argparse.ArgumentParser(description="Build golden dataset JSONL from a corpus spec")
     parser.add_argument("--spec", required=True, help="CorpusSpec JSON file")
     parser.add_argument("--out", required=True, help="output JSONL path")
     args = parser.parse_args(argv)
 
-    spec = CorpusSpec.model_validate_json(Path(args.spec).read_text(encoding="utf-8"))
-    manifest = generate_corpus(spec)
-    cases = build_cases(manifest)
+    try:
+        spec = CorpusSpec.model_validate_json(Path(args.spec).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"FAIL: spec file not found: {args.spec}")
+        return 1
+    except ValueError as exc:
+        print(f"FAIL: invalid corpus spec: {exc}")
+        return 1
+
+    cases = build_cases(generate_corpus(spec))
     write_jsonl(cases, args.out)
+    report = validate_dataset(cases)
     print(f"wrote {len(cases)} cases to {args.out}")
+    for issue in report.errors:
+        print(f"ERROR [{issue.case_id or '-'}]: {issue.message}")
+    for issue in report.warnings:
+        print(f"WARN  [{issue.case_id or '-'}]: {issue.message}")
+    if not report.valid:
+        print("FAIL: built dataset has blocking errors")
+        return 1
+    print("OK: built dataset passes validation" + (" (with warnings)" if report.warnings else ""))
     return 0
 
 
