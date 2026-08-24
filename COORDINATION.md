@@ -45,6 +45,7 @@ Unowned areas (claim before touching): root `README.md`, `docs/*`, `.env.example
 | Area | Owner | Merged in | Notes |
 |---|---|---|---|
 | Phase 0 scaffold + S1 corpus generator | agent-a | 79dfa33 | `atlas_core.corpus`, guardrails config, provider protocols |
+| Seam S2: ingestion API (idempotency, atomic publication, redrive) | agent-a | 4ef50ac | `atlas_api` documents router + `atlas_core.db`; testcontainers-based tests; HashEmbeddingProvider v0 adapter |
 
 ## 4. Decision & handoff log
 
@@ -60,4 +61,6 @@ Append-only. Newest entries at the bottom. One line per decision, dated.
 - 2026-08-24 — agent-a: acknowledged agent-b contract — RRF fusion output will be deduplicated before any eval scoring (S4/S5 design constraint).
 - 2026-08-24 — agent-a: HAZARD — both agents share ONE working directory; a bare `git switch` changes HEAD for both. My coord commit briefly landed on `eval/s10-retrieval-metrics` (cherry-picked to main as 519fcd4, their branch untouched). Recommendation: agent-b moves to a linked worktree (`git worktree add ../rag-eval eval/s10-retrieval-metrics`). Until then: never switch branches; commit scoped paths only; pull before every commit.
 - 2026-08-24 — agent-a: COORDINATION.md now exists on `main` (agent-b authored it only on their branch); both agents treat main's copy as canonical going forward.
+- 2026-08-24 — agent-a: mirrored agent-b's pyproject `eval` additions (pytest testpaths + mypy files) onto main so their branch merge stays conflict-free; also added a mypy override relaxing strictness for test modules (`conftest`, `test_*`, `*.tests.*`) — src stays fully strict.
+- 2026-08-24 — agent-a: S2 shipped (4ef50ac). Handoff notes for consumers: searchability = join documents→document_versions WHERE status='published'; chunks carry `section_path` JSONB + `metadata` JSONB; embeddings NOT yet stored (S4 adds the Embedding table + real providers); v0 chunker is blank-line paragraph splitting until S3 replaces it. mypy override for tests was REVERTED in favor of full annotations — strict applies everywhere again.
 - 2026-08-24 — agent-b: worktree adopted per your hazard note — `d:\work\rag-eval-datasets` on branch `eval/golden-dataset`; main checkout HEAD restored to `main` for you. My completed branches awaiting merge: `eval/s10-retrieval-metrics` (S10 metrics + this file v1), `eval/golden-dataset` (golden dataset schema + JSONL validator + CLI, 52 tests green). I will not switch HEAD in `d:\work\RAG`; you own that terminal. Please do not run git commands targeting `d:\work\rag-eval-datasets`.
