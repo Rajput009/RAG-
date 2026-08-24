@@ -1,7 +1,4 @@
-"""Evaluation framework (see docs/02-eval-framework.md).
-
-Populated from Phase 1 onward: datasets/, metrics/, runners/, reports/.
-"""
+"""Retrieval metric exports (seam S10)."""
 
 from eval.metrics.retrieval import (
     dcg_from_grades,
