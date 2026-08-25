@@ -32,6 +32,126 @@ class RerankerResult:
 
 
 @runtime_checkable
+class RerankerProvider(Protocol):
+    """Relevance reordering over fused candidates.
+
+    Implementations: Cohere, local bge-reranker, stubs.
+
+    Contract: rerank(query, documents) returns RerankerResults ordered by
+    relevance DESCENDING; each result's `index` refers to the position of the
+    document in the input `documents` sequence (input order is never mutated).
+    Implementations may accept an optional keyword-only `top_n` truncation.
+    """
+
+    async def rerank(self, query: str, documents: list[str]) -> list[RerankerResult]: ...
+
+
+class StubRerankerProvider:
+    """Deterministic reranker for tests and V3 smoke runs.
+
+    Scores each document by lexical token overlap with the query (case-
+    insensitive whitespace tokens), ties broken by input order, documents with
+    zero overlap dropped from the tail. NOT semantic - same caveat class as
+    HashEmbeddingProvider.
+    """
+
+    @property
+    def model_name(self) -> str:
+        return "stub-lexical-overlap"
+
+    async def rerank(
+        self,
+        query: str,
+        documents: Sequence[str],
+        *,
+        top_n: int | None = None,
+    ) -> list[RerankerResult]:
+        query_tokens = set(query.lower().split())
+        scored: list[tuple[int, int]] = []
+        for index, document in enumerate(documents):
+            overlap = len(query_tokens & set(document.lower().split()))
+            if overlap > 0:
+                scored.append((index, overlap))
+        scored.sort(key=lambda pair: (-pair[1], pair[0]))
+        if top_n is not None:
+            scored = scored[:top_n]
+        return [RerankerResult(index=i, relevance_score=float(o)) for i, o in scored]
+
+
+class CohereRerankProvider:
+    """Cohere Rerank adapter (api.cohere.com/v2/rerank).
+
+    Inert unless configured with an API key; all errors surface as RuntimeError
+    with provider detail (never silent degradation).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "rerank-v3.5",
+        base_url: str = "https://api.cohere.com/v2",
+        timeout_seconds: float = 30.0,
+        transport: Any | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("CohereRerankProvider requires a non-empty API key")
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout_seconds
+        self._transport = transport  # injectable for deterministic tests
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    async def rerank(
+        self,
+        query: str,
+        documents: Sequence[str],
+        *,
+        top_n: int | None = None,
+    ) -> list[RerankerResult]:
+        if not documents:
+            return []
+        import httpx  # local import keeps the dependency optional at import time
+
+        effective_top_n = top_n if top_n is not None else len(documents)
+        payload = {
+            "model": self._model,
+            "query": query,
+            "documents": list(documents),
+            "top_n": effective_top_n,
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport
+            ) as client:
+                response = await client.post(
+                    f"{self._base_url}/rerank",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"cohere rerank request failed: {exc}") from exc
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"cohere rerank returned {response.status_code}: {response.text[:500]}"
+            )
+
+        results_raw = response.json().get("results", [])
+        results: list[RerankerResult] = []
+        for item in results_raw:
+            index = int(item["index"])
+            if not 0 <= index < len(documents):
+                raise RuntimeError(f"cohere rerank returned out-of-range document index {index}")
+            results.append(
+                RerankerResult(index=index, relevance_score=float(item["relevance_score"]))
+            )
+        return results
+
+
+@runtime_checkable
 class LLMProvider(Protocol):
     """Text generation. Implementations: Anthropic, OpenRouter, fixtures."""
 
@@ -160,17 +280,6 @@ class EmbeddingProvider(Protocol):
 
     @property
     def model_name(self) -> str: ...
-
-
-@runtime_checkable
-class RerankerProvider(Protocol):
-    """Cross-encoder reranking over fused candidates.
-
-    Implementations must return results ordered by descending relevance and never
-    exceed the candidate cap enforced by the caller.
-    """
-
-    async def rerank(self, query: str, documents: list[str]) -> list[RerankerResult]: ...
 
 
 def resolve_provider[T: Any](protocol_type: type[T], implementation: Any) -> T:
