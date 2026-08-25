@@ -53,11 +53,7 @@ def test_versioned_policies_have_ascending_versions_with_single_current() -> Non
     manifest = generate_corpus(small_spec())
 
     refund_versions = sorted(
-        (
-            d
-            for d in manifest.documents
-            if d.tenant_id == "acme" and d.base_name == "refund_policy"
-        ),
+        (d for d in manifest.documents if d.tenant_id == "acme" and d.base_name == "refund_policy"),
         key=lambda d: d.version or 0,
     )
     assert [v.version for v in refund_versions] == [1, 2, 3]

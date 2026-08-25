@@ -9,6 +9,7 @@
 import uuid
 from datetime import UTC, datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -34,9 +35,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("organizations.id"), index=True
-    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     role: Mapped[str] = mapped_column(String(50), default="employee")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -51,9 +50,7 @@ class Upload(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
-    document_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("documents.id"), nullable=True
-    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
     version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("document_versions.id"), nullable=True
     )
@@ -64,9 +61,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("organizations.id"), index=True
-    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     title: Mapped[str] = mapped_column(String(512))
     doc_type: Mapped[str] = mapped_column(String(100))
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -81,9 +76,7 @@ class DocumentVersion(Base):
     __tablename__ = "document_versions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id"), index=True
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True)
     version_number: Mapped[int] = mapped_column(Integer, default=1)
     content_hash: Mapped[str] = mapped_column(String(64))
     effective_date: Mapped[str] = mapped_column(String(10))
@@ -108,3 +101,27 @@ class Chunk(Base):
     page_number: Mapped[int] = mapped_column(Integer, default=1)
     section_path: Mapped[list[str]] = mapped_column(JSONB, default=list)
     metadata_json: Mapped[dict[str, object]] = mapped_column("metadata", JSONB, default=dict)
+
+
+class Embedding(Base):
+    """One embedding vector per chunk (seam S4).
+
+    Contract (COORDINATION.md): embeddings are inserted inside the SAME
+    transaction that publishes the version - a version is searchable only when
+    its chunks AND their vectors are committed. One deployment runs ONE active
+    embedding model; mixed-model rows within an org are rejected at insert time.
+
+    The column is dimensionless so multiple deployments can use different
+    models; the HNSW index (see atlas_core.retrieval.ensure_hnsw_index) pins a
+    concrete dimension per deployment via the documented expression-index cast.
+    """
+
+    __tablename__ = "embeddings"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chunks.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(100))
+    model: Mapped[str] = mapped_column(String(200), index=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    vector: Mapped[list[float]] = mapped_column(Vector(), nullable=False)

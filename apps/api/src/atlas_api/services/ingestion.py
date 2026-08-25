@@ -5,7 +5,7 @@ import logging
 import uuid
 
 from atlas_core.chunking import chunk_document, get_strategy, parse_markdown
-from atlas_core.db.models import Chunk, Document, DocumentVersion, Upload
+from atlas_core.db.models import Chunk, Document, DocumentVersion, Embedding, Upload
 from atlas_core.providers import EmbeddingProvider
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -62,12 +62,18 @@ async def process_document(
         # single batched provider round-trip for the whole version
         embeddings = await embedding_provider.embed([chunk.text for chunk in chunks])
 
+        chunk_ids = [uuid.uuid4() for _ in chunks]
         chunk_rows: list[dict[str, object]] = []
-        for global_index, (chunk, embedding) in enumerate(
-            zip(chunks, embeddings, strict=True)
+        embedding_rows: list[dict[str, object]] = []
+        models = {embedding.model for embedding in embeddings}
+        if len(models) != 1:
+            raise ValueError(f"provider returned mixed embedding models: {sorted(models)}")
+        for global_index, (chunk, embedding, chunk_id) in enumerate(
+            zip(chunks, embeddings, chunk_ids, strict=True)
         ):
             chunk_rows.append(
                 {
+                    "id": chunk_id,
                     "document_version_id": version_id,
                     "chunk_index": global_index,
                     "text": chunk.text,
@@ -84,10 +90,21 @@ async def process_document(
                     },
                 }
             )
+            # seam S4 contract: vectors commit in the SAME transaction as the
+            # publish flip - a version is searchable only when fully embedded
+            embedding_rows.append(
+                {
+                    "chunk_id": chunk_id,
+                    "provider": type(embedding_provider).__name__,
+                    "model": embedding.model,
+                    "input_tokens": embedding.input_tokens,
+                    "vector": embedding.vector,
+                }
+            )
 
         async with engine.begin() as conn:
-            if chunk_rows:
-                await conn.execute(insert(Chunk), chunk_rows)
+            await conn.execute(insert(Chunk), chunk_rows)
+            await conn.execute(insert(Embedding), embedding_rows)
             await conn.execute(
                 update(DocumentVersion)
                 .where(DocumentVersion.id == version_id)

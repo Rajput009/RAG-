@@ -93,9 +93,7 @@ def test_fixed_strategy_respects_size_and_overlap() -> None:
     assert len(chunks) > 1
     assert all(c.token_count <= size for c in chunks)
     # overlap: some sentence unit repeats between consecutive chunks
-    repeats = sum(
-        1 for a, b in zip(chunks, chunks[1:], strict=False) if _shares_unit(a, b)
-    )
+    repeats = sum(1 for a, b in zip(chunks, chunks[1:], strict=False) if _shares_unit(a, b))
     assert repeats >= 1
 
 

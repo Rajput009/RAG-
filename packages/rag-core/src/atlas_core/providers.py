@@ -78,7 +78,8 @@ class HashEmbeddingProvider:
     """Deterministic, cost-free EmbeddingProvider for v0 pipelines and tests.
 
     Same text always yields the same vector; different texts practically never
-    collide. Not semantically meaningful - replaced by real providers in S4.
+    collide. Not semantically meaningful - used for smoke baselines and tests
+    until an API key configures a real provider.
     """
 
     DIM = 64
@@ -90,9 +91,79 @@ class HashEmbeddingProvider:
     async def embed(self, texts: list[str]) -> list[EmbeddingResult]:
         results: list[EmbeddingResult] = []
         for text in texts:
-            digest = hashlib.sha256(text.encode("utf-8")).digest()
-            vector = [b / 255.0 for b in digest[: self.DIM]]
+            # SHAKE-256 yields an arbitrary-length digest: always exactly DIM bytes
+            # (sha256 only provides 32, which silently truncated v0 vectors).
+            digest = hashlib.shake_256(text.encode("utf-8")).digest(self.DIM)
+            vector = [b / 255.0 for b in digest]
             results.append(
                 EmbeddingResult(vector=vector, model=self.model_name, input_tokens=len(text) // 4)
             )
         return results
+
+
+class OpenAIEmbeddingProvider:
+    """OpenAI embeddings adapter (text-embedding-3-small by default).
+
+    Inert unless configured with an API key; all errors surface as RuntimeError
+    with provider detail (never silent degradation).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "text-embedding-3-small",
+        dim: int = 1536,
+        base_url: str = "https://api.openai.com/v1",
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("OpenAIEmbeddingProvider requires a non-empty API key")
+        self._api_key = api_key
+        self._model = model
+        self._dim = dim
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout_seconds
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    async def embed(self, texts: list[str]) -> list[EmbeddingResult]:
+        if not texts:
+            return []
+        import httpx  # local import keeps the dependency optional at import time
+
+        payload = {
+            "model": self._model,
+            "input": texts,
+            "dimensions": self._dim,
+            "encoding_format": "float",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.post(
+                    f"{self._base_url}/embeddings",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"openai embeddings request failed: {exc}") from exc
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"openai embeddings returned {response.status_code}: {response.text[:500]}"
+            )
+        data = response.json()["data"]
+        ordered = sorted(data, key=lambda item: item["index"])
+        if len(ordered) != len(texts):
+            raise RuntimeError(
+                f"openai embeddings returned {len(ordered)} vectors for {len(texts)} inputs"
+            )
+        return [
+            EmbeddingResult(
+                vector=[float(x) for x in item["embedding"]],
+                model=self._model,
+                input_tokens=int(response.json().get("usage", {}).get("total_tokens", 0))
+                // max(1, len(texts)),
+            )
+            for item in ordered
+        ]
