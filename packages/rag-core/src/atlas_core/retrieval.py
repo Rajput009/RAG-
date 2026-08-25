@@ -119,6 +119,88 @@ class DenseRetriever:
         )
 
 
+class Bm25Retriever:
+    """Lexical retrieval over published chunks via ParadeDB pg_search.
+
+    Implements the SAME seam interface as DenseRetriever
+    (retrieve(query, filters) -> RankedResults) so HybridRetriever (seam S5
+    wiring) can run both and fuse.
+
+    Verified behavior at this seam:
+    - Lexical matching via pg_search's @@@ operator over a bm25 index on
+      chunks.text; scores are unbounded positive BM25 relevance (NOT cosine,
+      NOT comparable to dense scores).
+    - Filters constrain results SQL-side: tenant (organizations.name) and
+      document_versions.status='published' are WHERE clauses, never
+      post-filtering - the BM25 index covers all chunks, visibility is
+      enforced at query time exactly like dense retrieval.
+    - Empty/whitespace queries return zero results without touching the index.
+    """
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def retrieve(self, query: str, filters: RetrievalFilters | None = None) -> RankedResults:
+        filters = filters or RetrievalFilters()
+        if not query.strip():
+            return RankedResults(query=query, results=[])
+
+        params: dict[str, Any] = {"query": query, "top_k": filters.top_k}
+        sql = """
+            SELECT c.id AS chunk_id,
+                   d.id AS document_id,
+                   dv.id AS version_id,
+                   d.title AS title,
+                   c.text AS chunk_text,
+                   c.page_number AS page_number,
+                   c.section_path AS section_path,
+                   paradedb.score(c.id) AS score
+            FROM chunks c
+            JOIN document_versions dv ON dv.id = c.document_version_id
+            JOIN documents d ON d.id = dv.document_id
+            WHERE dv.status = 'published'
+              AND c.text @@@ :query
+        """
+        if filters.tenant is not None:
+            sql += " AND d.organization_id = (SELECT id FROM organizations WHERE name = :tenant)"
+            params["tenant"] = filters.tenant
+        sql += " ORDER BY score DESC LIMIT :top_k"
+
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(text(sql), params)).mappings().all()
+
+        return RankedResults(
+            query=query,
+            results=[
+                RankedResult(
+                    chunk_id=row["chunk_id"],
+                    document_id=row["document_id"],
+                    version_id=row["version_id"],
+                    title=row["title"],
+                    text=row["chunk_text"],
+                    score=float(row["score"]),
+                    page_number=int(row["page_number"]),
+                    section_path=list(row["section_path"] or []),
+                )
+                for row in rows
+            ],
+        )
+
+
+async def ensure_bm25_index(engine: AsyncEngine) -> None:
+    """Create the pg_search BM25 index over chunk text (idempotent).
+
+    key_field='id' (the chunks PK) is what paradedb.score() keys on at query
+    time. Safe to call repeatedly; index maintenance is incremental on INSERT.
+    """
+    ddl = (
+        "CREATE INDEX IF NOT EXISTS idx_chunks_bm25 ON chunks USING bm25 (id, text) "
+        "WITH (key_field='id')"
+    )
+    async with engine.begin() as conn:
+        await conn.execute(text(ddl))
+
+
 async def ensure_hnsw_index(engine: AsyncEngine, dimension: int) -> None:
     """Create the HNSW cosine index pinned to the deployment's dimension.
 
