@@ -6,6 +6,7 @@ LLMProvider / EmbeddingProvider / RerankerProvider, never internal collaborators
 """
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -42,6 +43,113 @@ class LLMProvider(Protocol):
         max_output_tokens: int,
         temperature: float = 0.0,
     ) -> LLMResponse: ...
+
+
+ABSTAIN_TOKEN = "ABSTAIN"
+
+
+class StubLLMProvider:
+    """Deterministic LLM for seam S9 tests: fixed grounded reply or marker-abstention.
+
+    Behavior:
+    - If any abstain_marker appears (case-insensitively) in the user message,
+      replies exactly ABSTAIN.
+    - If at least one numbered source is present, replies with a FIXED answer
+      citing [1] - never echoes source text, so leak checks exercise the
+      endpoint plumbing rather than the stub.
+    - Otherwise replies ABSTAIN.
+    """
+
+    FIXED_ANSWER = "The information is available in the cited source. [1]"
+
+    def __init__(self, abstain_markers: Sequence[str] = ()) -> None:
+        self._markers = [m.lower() for m in abstain_markers]
+
+    @property
+    def model_name(self) -> str:
+        return "stub-grounded"
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_message: str,
+        *,
+        max_output_tokens: int,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        lowered = user_message.lower()
+        abstained = any(marker in lowered for marker in self._markers)
+        has_source = any(line.strip().startswith("[1]") for line in user_message.splitlines())
+        if abstained or not has_source:
+            return LLMResponse(
+                text=ABSTAIN_TOKEN, input_tokens=len(user_message) // 4, output_tokens=1
+            )
+        return LLMResponse(
+            text=self.FIXED_ANSWER,
+            input_tokens=len(user_message) // 4,
+            output_tokens=len(self.FIXED_ANSWER) // 4,
+        )
+
+
+class AnthropicLLMProvider:
+    """Haiku-class generation adapter (api.anthropic.com/v1/messages)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-3-5-haiku-latest",
+        base_url: str = "https://api.anthropic.com/v1",
+        timeout_seconds: float = 60.0,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("AnthropicLLMProvider requires a non-empty API key")
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout_seconds
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_message: str,
+        *,
+        max_output_tokens: int,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        import httpx  # local import keeps the dependency optional at import time
+
+        payload = {
+            "model": self._model,
+            "max_tokens": max_output_tokens,
+            "temperature": temperature,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.post(
+                    f"{self._base_url}/messages",
+                    json=payload,
+                    headers={"x-api-key": self._api_key, "anthropic-version": "2023-06-01"},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"anthropic messages request failed: {exc}") from exc
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"anthropic messages returned {response.status_code}: {response.text[:500]}"
+            )
+        body = response.json()
+        text = "".join(block.get("text", "") for block in body.get("content", []))
+        usage = body.get("usage", {})
+        return LLMResponse(
+            text=text,
+            input_tokens=int(usage.get("input_tokens", 0)),
+            output_tokens=int(usage.get("output_tokens", 0)),
+        )
 
 
 @runtime_checkable

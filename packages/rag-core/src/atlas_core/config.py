@@ -63,4 +63,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     embedding_model: str = ""  # overrides provider default when non-empty
 
+    # Seam S9: "stub" (deterministic tests) or "anthropic" (requires key).
+    llm_provider: str = "stub"
+    anthropic_api_key: str = ""
+    llm_model: str = ""  # overrides provider default when non-empty
+    rag_top_k: int = 10  # retrieval candidates per query (<= guardrail ceiling)
+
     guardrails: Guardrails = Guardrails()
