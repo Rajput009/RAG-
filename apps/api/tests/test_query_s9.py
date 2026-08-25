@@ -85,6 +85,10 @@ class FixedReplyLLM:
     def __init__(self, reply: str) -> None:
         self._reply = reply
 
+    @property
+    def model_name(self) -> str:
+        return "fixed-reply"
+
     async def generate(
         self,
         system_prompt: str,

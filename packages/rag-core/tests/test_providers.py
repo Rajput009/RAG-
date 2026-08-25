@@ -10,6 +10,10 @@ from atlas_core.providers import (
 
 
 class FakeLLM:
+    @property
+    def model_name(self) -> str:
+        return "fake-llm"
+
     async def generate(
         self,
         system_prompt: str,

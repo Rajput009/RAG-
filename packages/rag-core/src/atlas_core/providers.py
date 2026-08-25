@@ -155,6 +155,9 @@ class CohereRerankProvider:
 class LLMProvider(Protocol):
     """Text generation. Implementations: Anthropic, OpenRouter, fixtures."""
 
+    @property
+    def model_name(self) -> str: ...
+
     async def generate(
         self,
         system_prompt: str,

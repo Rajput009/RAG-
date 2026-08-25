@@ -1,0 +1,17 @@
+{
+  "description": "Recorded LLM responses for seam S7 contract tests (docs/03: 'contract tests vs recorded LLM fixtures'). Keyed by the exact user question sent to the rewriter; response is the raw LLM text. Recorded from claude-class generation, temperature 0. Never regenerated silently - add new recordings as new entries.",
+  "recordings": [
+    {
+      "query": "What's our PTO carryover cap?",
+      "response": "What is the maximum paid-time-off carryover limit?"
+    },
+    {
+      "query": "Can I roll unused vacation days into next year, and how many?",
+      "response": "\"What is the policy for rolling unused vacation days into the next year and what is the maximum number?\""
+    },
+    {
+      "query": "Does it cover dental too?",
+      "response": "Does the enterprise benefits plan cover dental insurance in addition to medical coverage?"
+    }
+  ]
+}
