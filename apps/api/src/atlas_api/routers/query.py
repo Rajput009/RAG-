@@ -15,7 +15,7 @@ import uuid
 from atlas_core.chunking import section_slug, token_count
 from atlas_core.config import Settings
 from atlas_core.providers import LLMProvider
-from atlas_core.retrieval import DenseRetriever, RankedResults, RetrievalFilters
+from atlas_core.retrieval import RankedResults, RetrievalFilters, Retriever
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
@@ -90,7 +90,7 @@ def _assemble_sources(
 
 async def answer_question(request: Request, body: QueryBody, x_tenant_id: str) -> QueryResponse:
     settings: Settings = request.app.state.settings
-    retriever: DenseRetriever = request.app.state.retriever
+    retriever: Retriever = request.app.state.retriever
     llm: LLMProvider = request.app.state.llm_provider
     trace_id = str(uuid.uuid4())
 

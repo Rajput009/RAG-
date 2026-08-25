@@ -11,9 +11,10 @@ documented expression-index cast; plain similarity queries work on the raw
 dimensionless column regardless.
 """
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -139,11 +140,19 @@ class Bm25Retriever:
 
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
+        self._index_ready = False
 
     async def retrieve(self, query: str, filters: RetrievalFilters | None = None) -> RankedResults:
         filters = filters or RetrievalFilters()
         if not query.strip():
             return RankedResults(query=query, results=[])
+
+        # Lazy one-shot index creation: works under every entry path (API,
+        # scripts, tests driving ASGITransport where FastAPI lifespan never
+        # runs). IF NOT EXISTS keeps repeated/concurrent creation safe.
+        if not self._index_ready:
+            await ensure_bm25_index(self._engine)
+            self._index_ready = True
 
         params: dict[str, Any] = {"query": query, "top_k": filters.top_k}
         sql = """
@@ -199,6 +208,53 @@ async def ensure_bm25_index(engine: AsyncEngine) -> None:
     )
     async with engine.begin() as conn:
         await conn.execute(text(ddl))
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """The seam interface shared by DenseRetriever / Bm25Retriever /
+    HybridRetriever (docs/03: one retrieve signature, filters constrain
+    results, observed via results only)."""
+
+    async def retrieve(
+        self, query: str, filters: RetrievalFilters | None = None
+    ) -> RankedResults: ...
+
+
+class HybridRetriever:
+    """Dense + BM25 run concurrently, fused via RRF (seams S4+S5 wired).
+
+    CONTRACTS (COORDINATION.md):
+    - Both rankings pass through atlas_core.fusion.fuse with the SAME k.
+    - Fused output is deduplicated by chunk_id; fused scores are RRF scores,
+      not cosine, not BM25.
+    - Filters are forwarded unchanged to both legs, so tenant/published
+      visibility stays SQL-side in each leg independently.
+    """
+
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        embedding_provider: EmbeddingProvider,
+        *,
+        rrf_k: int = 60,
+    ) -> None:
+        self._dense = DenseRetriever(engine, embedding_provider)
+        self._bm25 = Bm25Retriever(engine)
+        self._rrf_k = rrf_k
+
+    async def retrieve(self, query: str, filters: RetrievalFilters | None = None) -> RankedResults:
+        from atlas_core.fusion import fuse  # lazy: fusion imports this module
+
+        filters = filters or RetrievalFilters()
+        if not query.strip():
+            return RankedResults(query=query, results=[])
+
+        dense_results, bm25_results = await asyncio.gather(
+            self._dense.retrieve(query, filters),
+            self._bm25.retrieve(query, filters),
+        )
+        return fuse([dense_results, bm25_results], k=self._rrf_k, top_k=filters.top_k)
 
 
 async def ensure_hnsw_index(engine: AsyncEngine, dimension: int) -> None:

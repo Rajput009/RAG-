@@ -69,4 +69,8 @@ class Settings(BaseSettings):
     llm_model: str = ""  # overrides provider default when non-empty
     rag_top_k: int = 10  # retrieval candidates per query (<= guardrail ceiling)
 
+    # Hybrid retrieval (Phase 2): "dense" (V0 default) | "bm25" | "hybrid"
+    # (dense+BM25 fused via RRF, seam S5). Unknown modes fail loudly at wiring.
+    retrieval_mode: str = "dense"
+
     guardrails: Guardrails = Guardrails()

@@ -8,8 +8,14 @@ from atlas_core.providers import (
     StubLLMProvider,
     resolve_provider,
 )
-from atlas_core.retrieval import DenseRetriever
+from atlas_core.retrieval import (
+    Bm25Retriever,
+    DenseRetriever,
+    HybridRetriever,
+    Retriever,
+)
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from atlas_api.routers import documents_router, query_router
 
@@ -36,6 +42,20 @@ def resolve_llm_provider(settings: Settings) -> LLMProvider:
     return StubLLMProvider()
 
 
+def resolve_retriever(
+    settings: Settings, engine: AsyncEngine, embedding_provider: EmbeddingProvider
+) -> Retriever:
+    """Retrieval-mode wiring: dense (V0 default), bm25, or hybrid (RRF-fused)."""
+    mode = settings.retrieval_mode
+    if mode == "dense":
+        return DenseRetriever(engine, embedding_provider)
+    if mode == "bm25":
+        return Bm25Retriever(engine)
+    if mode == "hybrid":
+        return HybridRetriever(engine, embedding_provider)
+    raise ValueError(f"unknown retrieval_mode: {mode!r} (expected dense|bm25|hybrid)")
+
+
 def create_app(
     settings: Settings | None = None,
     embedding_provider: EmbeddingProvider | None = None,
@@ -47,13 +67,14 @@ def create_app(
     llm = llm_provider or resolve_llm_provider(settings)
     resolve_provider(LLMProvider, llm)  # type: ignore[type-abstract]
     engine = make_engine(settings.database_url)
+    retriever = resolve_retriever(settings, engine, provider)
 
     app = FastAPI(title="Atlas Knowledge OS", version="0.1.0")
     app.state.settings = settings
     app.state.engine = engine
     app.state.embedding_provider = provider
     app.state.llm_provider = llm
-    app.state.retriever = DenseRetriever(engine, provider)
+    app.state.retriever = retriever
 
     @app.get("/health")
     async def health() -> dict[str, str]:
