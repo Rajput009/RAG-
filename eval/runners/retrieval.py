@@ -26,7 +26,14 @@ from atlas_core.corpus.generate import Section as GeneratedSection
 from atlas_core.db.models import Base, Document, DocumentVersion, Organization
 from atlas_core.db.session import make_engine
 from atlas_core.providers import EmbeddingProvider, HashEmbeddingProvider
-from atlas_core.retrieval import DenseRetriever, RetrievalFilters, ensure_hnsw_index
+from atlas_core.retrieval import (
+    Bm25Retriever,
+    DenseRetriever,
+    HybridRetriever,
+    RetrievalFilters,
+    Retriever,
+    ensure_hnsw_index,
+)
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -81,17 +88,29 @@ def _dedupe_by_doc(doc_ids: Sequence[str]) -> list[str]:
     return ordered
 
 
+def build_retriever(mode: str, engine: AsyncEngine, provider: EmbeddingProvider) -> Retriever:
+    """V0=dense | V1=bm25 | V2=hybrid (RRF). One mode per run, one table per dataset."""
+    if mode == "dense":
+        return DenseRetriever(engine, provider)
+    if mode == "bm25":
+        return Bm25Retriever(engine)
+    if mode == "hybrid":
+        return HybridRetriever(engine, provider)
+    raise SystemExit(f"FAIL: unknown retrieval mode {mode!r} (expected dense|bm25|hybrid)")
+
+
 async def run_baseline(
     engine: AsyncEngine,
     provider: EmbeddingProvider,
     dataset_path: Path,
     limit: int | None,
+    mode: str = "dense",
 ) -> dict[str, object]:
     cases = [case for case in load_jsonl(dataset_path) if case.answerable]
     if limit is not None:
         cases = cases[:limit]
 
-    retriever = DenseRetriever(engine, provider)
+    retriever = build_retriever(mode, engine, provider)
     recalls_5: list[float] = []
     recalls_10: list[float] = []
     rrs_10: list[float] = []
@@ -239,18 +258,24 @@ async def run_all(args: argparse.Namespace) -> dict[str, object]:
             f"model={provider.model_name} dim={dimension} "
             f"chunking={args.chunking_strategy}"
         )
-        return await run_baseline(engine, provider, args.dataset_path, args.limit)
+        return await run_baseline(engine, provider, args.dataset_path, args.limit, args.mode)
     finally:
         await engine.dispose()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="V0 dense retrieval baseline runner")
+    parser = argparse.ArgumentParser(description="Retrieval experiment runner (V0/V1/V2)")
     parser.add_argument("--dataset", required=True, help="golden JSONL path")
     parser.add_argument("--spec", required=True, help="corpus spec JSON used to build the dataset")
     parser.add_argument("--provider", choices=["hash", "openai"], default="hash")
     parser.add_argument("--api-key", default="")
     parser.add_argument("--model", default="", help="override embedding model (openai only)")
+    parser.add_argument(
+        "--mode",
+        choices=["dense", "bm25", "hybrid"],
+        default="dense",
+        help="V0=dense | V1=bm25 | V2=hybrid (RRF)",
+    )
     parser.add_argument("--limit", type=int, default=None, help="cap number of queries")
     parser.add_argument("--database-url", default=DEFAULT_DATABASE_URL)
     parser.add_argument("--chunking-strategy", default="paragraph")
@@ -263,15 +288,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     report_dir = Path(__file__).resolve().parents[1] / "reports" / stamp
     report_dir.mkdir(parents=True, exist_ok=True)
     payload = {
-        "runner": "v0-dense",
+        "runner": f"retrieval-{args.mode}",
         "provider": type(resolve_provider(args.provider, args.api_key, args.model)).__name__,
         "chunking_strategy": args.chunking_strategy,
         **results,
     }
     (report_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    config_label = {"dense": "V0", "bm25": "V1", "hybrid": "V2"}[args.mode]
     print(
-        f"\nV0 baseline ({args.provider}): "
+        f"\n{config_label} ({args.mode}, {args.provider}): "
         f"R@5={results['recall@5']} R@10={results['recall@10']} "
         f"MRR@10={results['mrr@10']} nDCG@10={results['ndcg@10']} "
         f"| p50={results['latency_p50_ms']}ms p95={results['latency_p95_ms']}ms "
