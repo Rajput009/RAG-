@@ -51,7 +51,7 @@ Unowned areas (claim before touching): root `README.md`, `docs/*`, `.env.example
 | Seam S3: structure-aware chunker strategies | agent-b | 84035a2 | `atlas_core.chunking` seam + config-selected ingestion; structural sweep in benchmarks/chunking.md (0 boundary violations); 152 tests / ruff / mypy strict green |
 | Seam S4: embeddings + pgvector dense retrieval | agent-b | 1995b58 | Embedding table in publish txn; OpenAI adapter (inert w/o key); DenseRetriever SQL-side filters; HNSW expression index; V0 smoke baseline measured (hash-64d); 159 tests / ruff / mypy strict green |
 | Seam S9: POST /query grounded answer endpoint | agent-b | 9208650 | tenant-filtered retrieval -> numbered sources -> LLMProvider -> {answer, citations, abstained, trace_id}; StubLLM + Anthropic adapter wired; 164 tests / ruff / mypy strict green |
-| Seam S5: fuse(rankings) -> ranking (RRF) | agent-b | 056ce19 | Pure RRF fusion in `atlas_core.fusion`: deduped by chunk_id, deterministic tie-breaks (score desc -> best rank -> chunk_id), top_k cap; 10 hand-worked-example tests; 176 tests / ruff / mypy strict green |
+| Seam S5: fuse(rankings) -> ranking (RRF) | agent-b | 4a8d749 | Pure RRF fusion in `atlas_core.fusion`: deduped by chunk_id, deterministic tie-breaks (score desc -> best rank -> chunk_id), top_k cap; 10 hand-worked-example tests; 176 tests / ruff / mypy strict green |
 
 ## 4. Decision & handoff log
 
