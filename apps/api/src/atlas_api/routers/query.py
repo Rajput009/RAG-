@@ -12,9 +12,9 @@ headings, matching gold-source labels in the golden datasets.
 import re
 import uuid
 
-from atlas_core.chunking import token_count
+from atlas_core.chunking import section_slug, token_count
 from atlas_core.config import Settings
-from atlas_core.providers import ABSTAIN_TOKEN, LLMProvider
+from atlas_core.providers import LLMProvider
 from atlas_core.retrieval import DenseRetriever, RankedResults, RetrievalFilters
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -51,7 +51,10 @@ class QueryResponse(BaseModel):
 
 
 def _slug(heading: str) -> str:
-    return heading.strip().lower().replace(" ", "_")
+    # Single source of truth lives in atlas_core.chunking; the eval dataset
+    # builder delegates to the same function, so gold labels and citation
+    # sections cannot drift.
+    return section_slug(heading)
 
 
 def _assemble_sources(
@@ -73,6 +76,11 @@ def _assemble_sources(
                 source=index,
                 document_title=result.title,
                 page_number=result.page_number,
+                # section_path is always non-empty for S1-corpus chunks (every
+                # chunk carries its heading path), so "content" is a defensive
+                # fallback only. If it ever fires for a golden case, the gold
+                # source check will flag the citation as unresolvable - loud,
+                # by design.
                 section=_slug(result.section_path[-1]) if result.section_path else "content",
                 chunk_id=str(result.chunk_id),
             )
@@ -109,13 +117,21 @@ async def answer_question(request: Request, body: QueryBody, x_tenant_id: str) -
         temperature=0.0,
     )
 
-    if response.text.strip().upper() == ABSTAIN_TOKEN:
+    stripped = response.text.strip()
+    # Tolerant abstain detection: models may reply "ABSTAIN", "Abstain.", or
+    # embed the token in a short refusal sentence. A bare ABSTAIN word anywhere
+    # in the reply means no grounded answer exists - fail closed.
+    if not stripped or "ABSTAIN" in stripped.upper():
         return QueryResponse(answer="", citations=[], abstained=True, trace_id=trace_id)
 
-    cited_refs = {int(m) for m in CITATION_PATTERN.findall(response.text)}
+    cited_refs = {int(m) for m in CITATION_PATTERN.findall(stripped)}
     resolved = [c for c in possible_citations if c.source in cited_refs]
+    if not resolved:
+        # Non-empty reply but zero resolvable citations: nothing is verifiable,
+        # so the answer ships as an abstention rather than an uncited claim.
+        return QueryResponse(answer="", citations=[], abstained=True, trace_id=trace_id)
     return QueryResponse(
-        answer=response.text.strip(),
+        answer=stripped,
         citations=resolved,
         abstained=False,
         trace_id=trace_id,

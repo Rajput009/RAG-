@@ -11,6 +11,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from atlas_core.chunking import section_slug
 from atlas_core.corpus import CorpusManifest, CorpusSpec, generate_corpus
 from atlas_core.corpus.generate import GoldFact
 
@@ -19,13 +20,8 @@ from eval.datasets.validate import validate_dataset
 
 
 def _section_slug(heading: str) -> str:
-    """Slug rule: strip, lowercase, spaces -> underscores.
-
-    CONTRACT (COORDINATION.md): gold sources in golden cases use this exact
-    slug of the corpus section heading. Citation resolution (S9) must apply
-    the same rule when mapping chunk section_path headings to case labels.
-    """
-    return heading.strip().lower().replace(" ", "_")
+    """Delegate to the shared slug rule (CONTRACT: atlas_core.chunking)."""
+    return section_slug(heading)
 
 
 def _case_id(fact: GoldFact) -> str:

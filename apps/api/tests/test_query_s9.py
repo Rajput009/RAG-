@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
-from atlas_core.providers import StubLLMProvider
+from atlas_core.providers import LLMResponse, StubLLMProvider
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -53,25 +53,66 @@ async def _upload(
     assert response.status_code == 202
 
 
+# helpers
+
+
+async def _post(
+    app: FastAPI, question: str, headers: dict[str, str] | None = None
+) -> httpx.Response:
+    """POST /query against the given app instance."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as direct:
+        return await direct.post("/query", json={"question": question}, headers=headers)
+
+
 def stub_app(client_pair: ClientPair, abstain_markers: list[str]) -> FastAPI:
     """Rebuild the app with a deterministic LLM (same engine/settings)."""
     from atlas_api.main import create_app
-    from atlas_core.config import Settings
 
     _, app = client_pair
+    # model_copy preserves env-set fields (rag_top_k etc.) across the rebuild
     return create_app(
-        Settings(database_url=app.state.settings.database_url),
+        app.state.settings.model_copy(),
         embedding_provider=app.state.embedding_provider,
         llm_provider=StubLLMProvider(abstain_markers=abstain_markers),
     )
 
 
+class FixedReplyLLM:
+    """Stub LLM returning a fixed reply regardless of input."""
+
+    def __init__(self, reply: str) -> None:
+        self._reply = reply
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_message: str,
+        *,
+        max_output_tokens: int,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        return LLMResponse(text=self._reply, input_tokens=1, output_tokens=1)
+
+
+def fixed_answer_app(client_pair: ClientPair, reply: str) -> FastAPI:
+    """Rebuild the app with a stub LLM that always returns a fixed reply."""
+    from atlas_api.main import create_app
+
+    _, app = client_pair
+    return create_app(
+        app.state.settings.model_copy(),
+        embedding_provider=app.state.embedding_provider,
+        llm_provider=FixedReplyLLM(reply),
+    )
+
+
 async def test_grounded_answer_with_resolvable_citation(client: ClientPair) -> None:
     await _upload(client, "s9-fact", FACT_CONTENT)
-    http, _ = client
     app = stub_app(client, abstain_markers=[GAP_QUESTION])
 
-    response = await app_state_post(app, http, GOLD_QUESTION)
+    response = await _post(app, GOLD_QUESTION)
 
     body = response.json()
     assert response.status_code == 200
@@ -88,10 +129,9 @@ async def test_grounded_answer_with_resolvable_citation(client: ClientPair) -> N
 
 async def test_gap_topic_abstains(client: ClientPair) -> None:
     await _upload(client, "s9-gap", FACT_CONTENT)
-    http, _ = client
     app = stub_app(client, abstain_markers=["office pet policy"])
 
-    response = await app_state_post(app, http, GAP_QUESTION)
+    response = await _post(app, GAP_QUESTION)
 
     body = response.json()
     assert body["abstained"] is True
@@ -102,10 +142,9 @@ async def test_gap_topic_abstains(client: ClientPair) -> None:
 
 async def test_unknown_tenant_query_abstains_isolated(client: ClientPair) -> None:
     await _upload(client, "s9-iso-a", FACT_CONTENT, tenant="tenant-a")
-    http, _ = client
     app = stub_app(client, abstain_markers=[])
 
-    response = await post_as(app, http, GOLD_QUESTION, tenant="tenant-b")
+    response = await _post(app, GOLD_QUESTION, headers={"X-Tenant-ID": "tenant-b"})
 
     body = response.json()
     # tenant-b has no documents: retrieval empty -> forced abstention (fail closed)
@@ -114,11 +153,13 @@ async def test_unknown_tenant_query_abstains_isolated(client: ClientPair) -> Non
 
 
 async def test_injection_text_never_leaks_into_answer(client: ClientPair) -> None:
+    """Exercises endpoint plumbing only: StubLLM ignores retrieved content, so
+    leak behavior against a REAL model lands with the security runner (roadmap
+    Phase 5), not here (deterministic-assertions-only policy)."""
     await _upload(client, "s9-inj", INJECTION_CONTENT)
-    http, _ = client
     app = stub_app(client, abstain_markers=[])
 
-    response = await app_state_post(app, http, "How long does the warranty last?")
+    response = await _post(app, "How long does the warranty last?")
 
     body = response.json()
     assert body["abstained"] is False
@@ -129,31 +170,40 @@ async def test_injection_text_never_leaks_into_answer(client: ClientPair) -> Non
 
 async def test_empty_question_rejected(client: ClientPair) -> None:
     _, app = client
-    from httpx import ASGITransport, AsyncClient
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
-        response = await http.post("/query", json={"question": "   "})
+    response = await _post(app, "   ")
     assert response.status_code == 422
 
 
-# helpers
+async def test_punctuated_abstain_still_abstains(client: ClientPair) -> None:
+    """Real models may reply 'Abstain.' or embed ABSTAIN in a refusal sentence.
+
+    Any reply containing the bare ABSTAIN word must surface as an abstention,
+    never as a grounded answer.
+    """
+    await _upload(client, "s9-punct-abstain", FACT_CONTENT)
+    app = fixed_answer_app(client, "Abstain.")
+
+    response = await _post(app, GOLD_QUESTION)
+
+    body = response.json()
+    assert body["abstained"] is True
+    assert body["answer"] == ""
+    assert body["citations"] == []
+    assert uuid.UUID(body["trace_id"])
 
 
-async def app_state_post(app: FastAPI, http: AsyncClient, question: str) -> httpx.Response:
-    """POST /query against a rebuilt app instance sharing the same DB/engine."""
+async def test_uncited_reply_ships_as_abstention(client: ClientPair) -> None:
+    """A non-empty reply with zero resolvable citations is unverifiable.
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as direct:
-        return await direct.post("/query", json={"question": question})
+    Fail closed: it must surface as an abstention, not an uncited grounded
+    answer.
+    """
+    await _upload(client, "s9-uncited", FACT_CONTENT)
+    app = fixed_answer_app(client, "The refund period is 42 days.")  # no [n] refs
 
+    response = await _post(app, GOLD_QUESTION)
 
-async def post_as(
-    app: FastAPI, http: AsyncClient, question: str, tenant: str | None = None
-) -> httpx.Response:
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as direct:
-        headers = {"X-Tenant-ID": tenant} if tenant else {}
-        return await direct.post("/query", json={"question": question}, headers=headers)
+    body = response.json()
+    assert body["abstained"] is True
+    assert body["answer"] == ""
+    assert body["citations"] == []

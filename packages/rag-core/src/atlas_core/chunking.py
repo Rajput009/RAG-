@@ -26,6 +26,18 @@ def token_count(text: str) -> int:
     return max(1, len(text) // TOKEN_CHARS)
 
 
+def section_slug(heading: str) -> str:
+    """Slug rule: strip, lowercase, spaces -> underscores.
+
+    CONTRACT (COORDINATION.md): gold sources in golden cases use this exact
+    slug of the corpus section heading. Citation resolution (S9) applies the
+    same rule when mapping chunk section_path headings to citation labels.
+    Both the eval dataset builder and the query router delegate here so the
+    two can never drift.
+    """
+    return heading.strip().lower().replace(" ", "_")
+
+
 @dataclass(frozen=True)
 class InputSection:
     """One parsed section: heading path root, page number, paragraph texts."""
