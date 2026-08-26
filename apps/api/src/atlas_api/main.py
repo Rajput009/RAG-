@@ -25,12 +25,17 @@ from atlas_api.routers import auth_router, documents_router, query_router, requi
 
 
 def resolve_embedding_provider(settings: Settings) -> EmbeddingProvider:
-    """Seam S4 wiring: hash (tests/smoke) or OpenAI (requires API key)."""
+    """Seam S4 wiring: hash (tests/smoke), OpenAI, or Google (both need keys)."""
     if settings.embedding_provider == "openai":
         model = settings.embedding_model or "text-embedding-3-small"
         return OpenAIEmbeddingProvider(api_key=settings.openai_api_key, model=model)
+    if settings.embedding_provider == "google":
+        model = settings.embedding_model or "gemini-embedding-001"
+        from atlas_core.providers import GoogleEmbeddingProvider
+
+        return GoogleEmbeddingProvider(api_key=settings.google_api_key, model=model)
     if settings.embedding_model:
-        raise ValueError("embedding_model override requires embedding_provider='openai'")
+        raise ValueError("embedding_model override requires a keyed embedding provider")
     return HashEmbeddingProvider()
 
 

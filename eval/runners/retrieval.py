@@ -28,6 +28,7 @@ from atlas_core.db.models import Base, Document, DocumentVersion, Organization
 from atlas_core.db.session import make_engine
 from atlas_core.providers import (
     EmbeddingProvider,
+    EmbeddingResult,
     HashEmbeddingProvider,
     RerankerProvider,
     RerankerResult,
@@ -60,6 +61,41 @@ def corpus_doc_uuid(doc_id: str) -> uuid.UUID:
     return uuid.uuid5(DOC_ID_NAMESPACE, doc_id)
 
 
+class ThrottledEmbedder:
+    """Client-side rate limiter for keyed embedding providers (free tiers).
+
+    Enforces a minimum interval between calls and retries 429s with backoff.
+    """
+
+    def __init__(self, inner: EmbeddingProvider, min_interval_seconds: float) -> None:
+        import asyncio
+
+        self._asyncio = asyncio
+        self._inner = inner
+        self._min_interval = min_interval_seconds
+        self._last_call = float("-inf")
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name
+
+    async def embed(self, texts: list[str]) -> list[EmbeddingResult]:
+        last_error: Exception | None = None
+        for attempt in range(4):
+            elapsed = time.monotonic() - self._last_call
+            if elapsed < self._min_interval:
+                await self._asyncio.sleep(self._min_interval - elapsed)
+            self._last_call = time.monotonic()
+            try:
+                return await self._inner.embed(texts)
+            except RuntimeError as exc:
+                last_error = exc
+                if "429" not in str(exc) or attempt == 3:
+                    raise
+                await self._asyncio.sleep(25)
+        raise last_error if last_error else RuntimeError("embed failed")  # pragma: no cover
+
+
 def resolve_provider(name: str, api_key: str, model_override: str) -> EmbeddingProvider:
     if name == "openai":
         if not api_key.strip():
@@ -68,8 +104,16 @@ def resolve_provider(name: str, api_key: str, model_override: str) -> EmbeddingP
         from atlas_core.providers import OpenAIEmbeddingProvider
 
         return OpenAIEmbeddingProvider(api_key=api_key, model=model)
+    if name == "google":
+        if not api_key.strip():
+            raise SystemExit("FAIL: --provider google requires --api-key")
+        from atlas_core.providers import GoogleEmbeddingProvider
+
+        return GoogleEmbeddingProvider(
+            api_key=api_key, model=model_override or "gemini-embedding-001"
+        )
     if model_override:
-        raise SystemExit("FAIL: --model override only applies to --provider openai")
+        raise SystemExit("FAIL: --model override only applies to keyed providers")
     return HashEmbeddingProvider()
 
 
@@ -327,19 +371,27 @@ async def ingest_corpus(
 
 
 async def run_all(args: argparse.Namespace) -> dict[str, object]:
-    provider = resolve_provider(args.provider, args.api_key, args.model)
+    provider: EmbeddingProvider = resolve_provider(args.provider, args.api_key, args.model)
+    if args.embed_min_interval > 0:
+        provider = ThrottledEmbedder(provider, args.embed_min_interval)
     probe = await provider.embed(["dimension probe"])
     dimension = len(probe[0].vector)
 
     engine = make_engine(Settings(database_url=args.database_url).database_url)
     try:
-        await prepare_schema(engine, dimension)
-        count = await ingest_corpus(engine, provider, args.spec_path, args.chunking_strategy)
-        print(
-            f"indexed {count} docs | provider={type(provider).__name__} "
-            f"model={provider.model_name} dim={dimension} "
-            f"chunking={args.chunking_strategy}"
-        )
+        if not args.skip_ingest:
+            await prepare_schema(engine, dimension)
+            count = await ingest_corpus(engine, provider, args.spec_path, args.chunking_strategy)
+            print(
+                f"indexed {count} docs | provider={type(provider).__name__} "
+                f"model={provider.model_name} dim={dimension} "
+                f"chunking={args.chunking_strategy}"
+            )
+        else:
+            print(
+                "skip-ingest: scoring against existing corpus | "
+                f"provider={type(provider).__name__} model={provider.model_name} dim={dimension}"
+            )
         return await run_baseline(
             engine,
             provider,
@@ -356,7 +408,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Retrieval experiment runner (V0/V1/V2)")
     parser.add_argument("--dataset", required=True, help="golden JSONL path")
     parser.add_argument("--spec", required=True, help="corpus spec JSON used to build the dataset")
-    parser.add_argument("--provider", choices=["hash", "openai"], default="hash")
+    parser.add_argument("--provider", choices=["hash", "openai", "google"], default="hash")
     parser.add_argument("--api-key", default="")
     parser.add_argument("--model", default="", help="override embedding model (openai only)")
     parser.add_argument(
@@ -379,6 +431,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=0.0,
         help="min seconds between rerank calls (trial keys: 6.5 for 10/min)",
+    )
+    parser.add_argument(
+        "--embed-min-interval",
+        type=float,
+        default=0.0,
+        help="min seconds between embed calls (free tiers: 1.0 for 100/min)",
+    )
+    parser.add_argument(
+        "--skip-ingest",
+        action="store_true",
+        help="score against an ALREADY-indexed corpus in the target DB "
+        "(no schema reset, no ingest, no ingest-side embed calls)",
     )
     parser.add_argument("--database-url", default=DEFAULT_DATABASE_URL)
     parser.add_argument("--chunking-strategy", default="paragraph")

@@ -57,10 +57,12 @@ class Settings(BaseSettings):
     # 'paragraph' (v0 behavior) until benchmarks/chunking.md measures a winner.
     chunking_strategy: str = "paragraph"
 
-    # Seam S4: "hash" (deterministic, free, tests/smoke) or "openai"
-    # (requires openai_api_key). One deployment runs ONE active model.
+    # Seam S4: "hash" (deterministic, free, tests/smoke), "openai"
+    # (requires openai_api_key) or "google" (requires google_api_key).
+    # One deployment runs ONE active model.
     embedding_provider: str = "hash"
     openai_api_key: str = ""
+    google_api_key: str = ""
     embedding_model: str = ""  # overrides provider default when non-empty
 
     # Seam S9: "stub" (deterministic tests) or "anthropic" (requires key).

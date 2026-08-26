@@ -156,6 +156,96 @@ class CohereRerankProvider:
         return results
 
 
+class GoogleEmbeddingProvider:
+    """Google Gemini embeddings (generativelanguage.googleapis.com).
+
+    Uses batchEmbedContents (one round-trip per call site, order-preserving)
+    with outputDimensionality pinned to `dim` so every deployment gets a fixed
+    vector size regardless of the model's native width.
+
+    Inert unless configured with an API key; all errors surface as RuntimeError
+    with provider detail (never silent degradation).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-embedding-001",
+        dim: int = 768,
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+        timeout_seconds: float = 30.0,
+        transport: Any | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("GoogleEmbeddingProvider requires a non-empty API key")
+        if dim <= 0:
+            raise ValueError("dim must be positive")
+        self._api_key = api_key
+        self._model = model
+        self._dim = dim
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout_seconds
+        self._transport = transport  # injectable for deterministic tests
+
+    @property
+    def model_name(self) -> str:
+        # Dimension encoded in the storage key (hash-64d convention): a dim
+        # change under the same model name must never mix vector widths.
+        return f"{self._model}@{self._dim}"
+
+    async def embed(self, texts: list[str]) -> list[EmbeddingResult]:
+        if not texts:
+            return []
+        import httpx  # local import keeps the dependency optional at import time
+
+        payload = {
+            "requests": [
+                {
+                    "model": f"models/{self._model}",
+                    "content": {"parts": [{"text": text}]},
+                    "outputDimensionality": self._dim,
+                }
+                for text in texts
+            ]
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport
+            ) as client:
+                response = await client.post(
+                    f"{self._base_url}/models/{self._model}:batchEmbedContents",
+                    params={"key": self._api_key},
+                    json=payload,
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"google embeddings request failed: {exc}") from exc
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"google embeddings returned {response.status_code}: {response.text[:500]}"
+            )
+
+        embeddings = response.json().get("embeddings", [])
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                f"google embeddings returned {len(embeddings)} vectors for {len(texts)} inputs"
+            )
+        results: list[EmbeddingResult] = []
+        for text, item in zip(texts, embeddings, strict=True):
+            values = item.get("values", [])
+            if len(values) != self._dim:
+                raise RuntimeError(
+                    f"google embeddings returned {len(values)} dims, expected {self._dim}"
+                )
+            results.append(
+                EmbeddingResult(
+                    vector=[float(x) for x in values],
+                    model=self.model_name,
+                    input_tokens=len(text) // 4,
+                )
+            )
+        return results
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Text generation. Implementations: Anthropic, OpenRouter, fixtures."""
