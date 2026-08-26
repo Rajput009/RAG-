@@ -35,7 +35,13 @@ class FakeEmbedder:
 
 
 class FakeReranker:
-    async def rerank(self, query: str, documents: list[str]) -> list[RerankerResult]:
+    @property
+    def model_name(self) -> str:
+        return "fake-rerank"
+
+    async def rerank(
+        self, query: str, documents: list[str], *, top_n: int | None = None
+    ) -> list[RerankerResult]:
         raise AssertionError("not used in wiring test")
 
 

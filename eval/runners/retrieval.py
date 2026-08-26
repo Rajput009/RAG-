@@ -14,6 +14,7 @@ CLI: python -m eval.runners.retrieval --dataset <golden.jsonl> --spec <spec.json
 import argparse
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections.abc import Sequence
@@ -25,11 +26,18 @@ from atlas_core.corpus import CorpusSpec, generate_corpus
 from atlas_core.corpus.generate import Section as GeneratedSection
 from atlas_core.db.models import Base, Document, DocumentVersion, Organization
 from atlas_core.db.session import make_engine
-from atlas_core.providers import EmbeddingProvider, HashEmbeddingProvider
+from atlas_core.providers import (
+    EmbeddingProvider,
+    HashEmbeddingProvider,
+    RerankerProvider,
+    RerankerResult,
+    StubRerankerProvider,
+)
 from atlas_core.retrieval import (
     Bm25Retriever,
     DenseRetriever,
     HybridRetriever,
+    RankedResults,
     RetrievalFilters,
     Retriever,
     ensure_hnsw_index,
@@ -99,12 +107,78 @@ def build_retriever(mode: str, engine: AsyncEngine, provider: EmbeddingProvider)
     raise SystemExit(f"FAIL: unknown retrieval mode {mode!r} (expected dense|bm25|hybrid)")
 
 
+def resolve_reranker(provider_name: str, api_key: str, model: str) -> RerankerProvider | None:
+    """V3 stage: none (default) | stub (lexical) | cohere (requires key)."""
+    if provider_name == "none":
+        return None
+    if provider_name == "stub":
+        return StubRerankerProvider()
+    if provider_name == "cohere":
+        if not api_key.strip():
+            raise SystemExit("FAIL: --rerank-provider cohere requires --rerank-api-key")
+        from atlas_core.providers import CohereRerankProvider
+
+        return CohereRerankProvider(api_key=api_key, model=model or "rerank-v3.5")
+    raise SystemExit(f"FAIL: unknown rerank provider {provider_name!r}")
+
+
+def _build_reranker(args: argparse.Namespace) -> RerankerProvider | None:
+    inner = resolve_reranker(args.rerank_provider, args.rerank_api_key, args.rerank_model)
+    if inner is None:
+        return None
+    if args.rerank_min_interval > 0:
+        return ThrottledReranker(inner, args.rerank_min_interval)
+    return inner
+
+
+class ThrottledReranker:
+    """Client-side rate limiter wrapper (trial keys: e.g. 10 calls/minute).
+
+    Enforces a minimum interval between provider calls and retries a limited
+    number of times on 429 responses.
+    """
+
+    def __init__(self, inner: RerankerProvider, min_interval_seconds: float) -> None:
+        self._inner = inner
+        self._min_interval = min_interval_seconds
+        self._last_call = float("-inf")
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name
+
+    async def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        *,
+        top_n: int | None = None,
+    ) -> list[RerankerResult]:
+        import asyncio
+
+        last_error: Exception | None = None
+        for attempt in range(3):
+            elapsed = time.monotonic() - self._last_call
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+            self._last_call = time.monotonic()
+            try:
+                return await self._inner.rerank(query, documents, top_n=top_n)
+            except RuntimeError as exc:
+                last_error = exc
+                if "429" not in str(exc) or attempt == 2:
+                    raise
+                await asyncio.sleep(20)
+        raise last_error if last_error else RuntimeError("rerank failed")  # pragma: no cover
+
+
 async def run_baseline(
     engine: AsyncEngine,
     provider: EmbeddingProvider,
     dataset_path: Path,
     limit: int | None,
     mode: str = "dense",
+    reranker: RerankerProvider | None = None,
 ) -> dict[str, object]:
     cases = [case for case in load_jsonl(dataset_path) if case.answerable]
     if limit is not None:
@@ -122,6 +196,14 @@ async def run_baseline(
         relevant = [str(corpus_doc_uuid(s.doc_id)) for s in case.gold_sources]
         started = time.perf_counter()
         ranked = await retriever.retrieve(case.question, RetrievalFilters(tenant=case.tenant))
+        if reranker is not None and ranked.results:
+            # V3 stage: reorder candidates by reranker relevance (input indices).
+            order = await reranker.rerank(
+                case.question, [r.text for r in ranked.results], top_n=len(ranked.results)
+            )
+            ranked = RankedResults(
+                query=case.question, results=[ranked.results[item.index] for item in order]
+            )
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
         latencies_ms.append(elapsed_ms)
 
@@ -258,7 +340,14 @@ async def run_all(args: argparse.Namespace) -> dict[str, object]:
             f"model={provider.model_name} dim={dimension} "
             f"chunking={args.chunking_strategy}"
         )
-        return await run_baseline(engine, provider, args.dataset_path, args.limit, args.mode)
+        return await run_baseline(
+            engine,
+            provider,
+            args.dataset_path,
+            args.limit,
+            args.mode,
+            reranker=_build_reranker(args),
+        )
     finally:
         await engine.dispose()
 
@@ -277,6 +366,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="V0=dense | V1=bm25 | V2=hybrid (RRF)",
     )
     parser.add_argument("--limit", type=int, default=None, help="cap number of queries")
+    parser.add_argument(
+        "--rerank-provider",
+        choices=["none", "stub", "cohere"],
+        default="none",
+        help="optional rerank stage on top of the retrieval mode (V3)",
+    )
+    parser.add_argument("--rerank-api-key", default=os.environ.get("COHERE_API_KEY", ""))
+    parser.add_argument("--rerank-model", default="", help="override reranker model")
+    parser.add_argument(
+        "--rerank-min-interval",
+        type=float,
+        default=0.0,
+        help="min seconds between rerank calls (trial keys: 6.5 for 10/min)",
+    )
     parser.add_argument("--database-url", default=DEFAULT_DATABASE_URL)
     parser.add_argument("--chunking-strategy", default="paragraph")
     args = parser.parse_args(argv)
@@ -293,9 +396,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "chunking_strategy": args.chunking_strategy,
         **results,
     }
+    if args.rerank_provider != "none":
+        payload["rerank_provider"] = args.rerank_provider
+        payload["rerank_model"] = args.rerank_model or (
+            "rerank-v3.5" if args.rerank_provider == "cohere" else "stub-lexical-overlap"
+        )
     (report_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     config_label = {"dense": "V0", "bm25": "V1", "hybrid": "V2"}[args.mode]
+    if args.rerank_provider != "none":
+        config_label += "+rerank"
     print(
         f"\n{config_label} ({args.mode}, {args.provider}): "
         f"R@5={results['recall@5']} R@10={results['recall@10']} "

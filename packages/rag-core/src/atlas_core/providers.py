@@ -43,6 +43,9 @@ class RerankerProvider(Protocol):
     Implementations MUST accept an optional keyword-only `top_n` truncation.
     """
 
+    @property
+    def model_name(self) -> str: ...
+
     async def rerank(
         self, query: str, documents: list[str], *, top_n: int | None = None
     ) -> list[RerankerResult]: ...
