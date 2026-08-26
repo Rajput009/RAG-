@@ -40,10 +40,12 @@ class RerankerProvider(Protocol):
     Contract: rerank(query, documents) returns RerankerResults ordered by
     relevance DESCENDING; each result's `index` refers to the position of the
     document in the input `documents` sequence (input order is never mutated).
-    Implementations may accept an optional keyword-only `top_n` truncation.
+    Implementations MUST accept an optional keyword-only `top_n` truncation.
     """
 
-    async def rerank(self, query: str, documents: list[str]) -> list[RerankerResult]: ...
+    async def rerank(
+        self, query: str, documents: list[str], *, top_n: int | None = None
+    ) -> list[RerankerResult]: ...
 
 
 class StubRerankerProvider:

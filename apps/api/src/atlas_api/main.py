@@ -1,11 +1,14 @@
 from atlas_core.config import Settings
 from atlas_core.db.session import make_engine
 from atlas_core.providers import (
+    CohereRerankProvider,
     EmbeddingProvider,
     HashEmbeddingProvider,
     LLMProvider,
     OpenAIEmbeddingProvider,
+    RerankerProvider,
     StubLLMProvider,
+    StubRerankerProvider,
     resolve_provider,
 )
 from atlas_core.retrieval import (
@@ -14,6 +17,7 @@ from atlas_core.retrieval import (
     HybridRetriever,
     Retriever,
 )
+from atlas_core.rewrite import LLMQueryRewriter
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -42,6 +46,18 @@ def resolve_llm_provider(settings: Settings) -> LLMProvider:
     return StubLLMProvider()
 
 
+def resolve_reranker(settings: Settings) -> RerankerProvider | None:
+    """Rerank-stage wiring: None (disabled), stub, or Cohere (requires key)."""
+    if not settings.rerank_enabled:
+        return None
+    if settings.rerank_provider == "stub":
+        return StubRerankerProvider()
+    if settings.rerank_provider == "cohere":
+        model = settings.rerank_model or "rerank-v3.5"
+        return CohereRerankProvider(api_key=settings.cohere_api_key, model=model)
+    raise ValueError(f"unknown rerank_provider: {settings.rerank_provider!r}")
+
+
 def resolve_retriever(
     settings: Settings, engine: AsyncEngine, embedding_provider: EmbeddingProvider
 ) -> Retriever:
@@ -68,6 +84,8 @@ def create_app(
     resolve_provider(LLMProvider, llm)  # type: ignore[type-abstract]
     engine = make_engine(settings.database_url)
     retriever = resolve_retriever(settings, engine, provider)
+    reranker = resolve_reranker(settings)
+    rewriter = LLMQueryRewriter(llm) if settings.query_rewrite_enabled else None
 
     app = FastAPI(title="Atlas Knowledge OS", version="0.1.0")
     app.state.settings = settings
@@ -75,6 +93,8 @@ def create_app(
     app.state.embedding_provider = provider
     app.state.llm_provider = llm
     app.state.retriever = retriever
+    app.state.reranker = reranker
+    app.state.rewriter = rewriter
 
     @app.get("/health")
     async def health() -> dict[str, str]:

@@ -14,8 +14,9 @@ import uuid
 
 from atlas_core.chunking import section_slug, token_count
 from atlas_core.config import Settings
-from atlas_core.providers import LLMProvider
+from atlas_core.providers import LLMProvider, RerankerProvider
 from atlas_core.retrieval import RankedResults, RetrievalFilters, Retriever
+from atlas_core.rewrite import LLMQueryRewriter
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
@@ -92,13 +93,33 @@ async def answer_question(request: Request, body: QueryBody, x_tenant_id: str) -
     settings: Settings = request.app.state.settings
     retriever: Retriever = request.app.state.retriever
     llm: LLMProvider = request.app.state.llm_provider
+    reranker: RerankerProvider | None = request.app.state.reranker
+    rewriter: LLMQueryRewriter | None = request.app.state.rewriter
     trace_id = str(uuid.uuid4())
 
     if not body.question.strip():
         raise HTTPException(status_code=422, detail="question must be non-empty")
 
+    # Seam S7 (optional): rewrite for search; original question still drives
+    # nothing else - the rewrite is fallback-safe by contract.
+    search_query = body.question
+    if rewriter is not None:
+        rewritten = await rewriter.rewrite(body.question)
+        search_query = rewritten.rewritten
+
     filters = RetrievalFilters(tenant=x_tenant_id, top_k=settings.rag_top_k)
-    ranked = await retriever.retrieve(body.question, filters)
+    ranked = await retriever.retrieve(search_query, filters)
+
+    # Rerank stage (optional): reorder retrieved candidates, truncate to top_k.
+    if reranker is not None and ranked.results:
+        order = await reranker.rerank(
+            search_query, [result.text for result in ranked.results], top_n=settings.rag_top_k
+        )
+        ranked = RankedResults(
+            query=search_query,
+            results=[ranked.results[item.index] for item in order],
+        )
+
     if not ranked.results:
         return QueryResponse(answer="", citations=[], abstained=True, trace_id=trace_id)
 

@@ -73,4 +73,11 @@ class Settings(BaseSettings):
     # (dense+BM25 fused via RRF, seam S5). Unknown modes fail loudly at wiring.
     retrieval_mode: str = "dense"
 
+    # Pipeline stages (Phase 3). Both default OFF - V0 behavior unchanged.
+    query_rewrite_enabled: bool = False  # seam S7 rewriter on the search query
+    rerank_enabled: bool = False  # rerank retrieved candidates (seam S4/V3)
+    rerank_provider: str = "stub"  # "stub" (lexical overlap) | "cohere" (needs key)
+    cohere_api_key: str = ""
+    rerank_model: str = ""  # overrides provider default when non-empty
+
     guardrails: Guardrails = Guardrails()
