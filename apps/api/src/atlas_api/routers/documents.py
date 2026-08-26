@@ -2,6 +2,7 @@
 
 import uuid
 
+from atlas_core.auth import role_can_upload
 from atlas_core.db.models import Document, DocumentVersion, Organization, Upload
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -66,7 +67,12 @@ async def upload_document(
     if not idempotency_key.strip():
         raise HTTPException(status_code=422, detail="Idempotency-Key must be non-empty")
 
-    org_id = await _get_or_create_org_id(request, x_tenant_id)
+    # Auth mode: tenancy from verified claims; upload is role-gated.
+    claims = getattr(request.state, "claims", None)
+    if claims is not None and not role_can_upload(claims.role):
+        raise HTTPException(status_code=403, detail="role not permitted to upload documents")
+    tenant = claims.tenant if claims is not None else x_tenant_id
+    org_id = await _get_or_create_org_id(request, tenant)
     hash_value = content_hash(body.content)
 
     async with _session(request) as session:

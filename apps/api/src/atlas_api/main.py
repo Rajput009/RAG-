@@ -18,10 +18,10 @@ from atlas_core.retrieval import (
     Retriever,
 )
 from atlas_core.rewrite import LLMQueryRewriter
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from atlas_api.routers import documents_router, query_router
+from atlas_api.routers import auth_router, documents_router, query_router, require_bearer
 
 
 def resolve_embedding_provider(settings: Settings) -> EmbeddingProvider:
@@ -100,8 +100,13 @@ def create_app(
     async def health() -> dict[str, str]:
         return {"status": "ok", "environment": settings.environment}
 
-    app.include_router(documents_router)
-    app.include_router(query_router)
+    app.include_router(auth_router)
+    if settings.auth_enabled:
+        app.include_router(documents_router, dependencies=[Depends(require_bearer)])
+        app.include_router(query_router, dependencies=[Depends(require_bearer)])
+    else:
+        app.include_router(documents_router)
+        app.include_router(query_router)
     return app
 
 

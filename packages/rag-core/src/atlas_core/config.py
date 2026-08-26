@@ -80,4 +80,11 @@ class Settings(BaseSettings):
     cohere_api_key: str = ""
     rerank_model: str = ""  # overrides provider default when non-empty
 
+    # Seam S8 auth. Default OFF = dev mode (X-Tenant-ID header trusted, no
+    # tokens). When enabled, /query and /documents REQUIRE a bearer token from
+    # POST /auth/token; tenant ALWAYS comes from the token, never the header.
+    auth_enabled: bool = False
+    jwt_secret: str = "dev-secret-change-me"
+    token_ttl_seconds: int = 3600
+
     guardrails: Guardrails = Guardrails()

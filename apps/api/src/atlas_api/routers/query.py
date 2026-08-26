@@ -165,8 +165,11 @@ async def query(
     request: Request,
     x_tenant_id: str = Header(default="acme", alias="X-Tenant-ID"),
 ) -> QueryResponse:
+    # Auth mode: tenancy comes from verified token claims, never the header.
+    claims = getattr(request.state, "claims", None)
+    tenant = claims.tenant if claims is not None else x_tenant_id
     try:
-        return await answer_question(request, body, x_tenant_id)
+        return await answer_question(request, body, tenant)
     except HTTPException:
         raise
     except RuntimeError as exc:
